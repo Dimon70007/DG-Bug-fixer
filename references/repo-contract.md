@@ -1,7 +1,14 @@
-# Repo contract — where the ledger lives, which tools are allowed
+# Project contract — linux_to_mac (filled instance for this repository)
 
-This repo is not a generic project. Three things differ from a stock "bug fixer"
-workflow, and getting them wrong wastes a whole iteration.
+This is a **filled** copy of the template in [`project-contract.md`](project-contract.md).
+It applies only to `linux_to_mac` and the fork submodule; other projects need their own
+`bug-fixer.project.md` in their root.
+
+The skill reads the contract from the project, not from this file. This file exists so the
+values are reviewable in the skill's history and so `linux_to_mac` has a ready answer.
+
+Three things differ from a stock "bug fixer" workflow here, and getting them wrong wastes a
+whole iteration.
 
 ## 1. The ledger is the task file
 
@@ -11,7 +18,6 @@ workflow, and getting them wrong wastes a whole iteration.
   in-file findings: TASK-077 carries F1-F52 in its own file, TASK-073.1 carries
   its findings the same way. A second file splits the record and is lost on the
   next session.
-
 If the task file has no findings section yet, add one (`## Findings`) and keep
 appending; do not restructure the rest of the file.
 

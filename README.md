@@ -281,6 +281,41 @@ name should match `name`.
 
 ---
 
+## Optional: run the loop autonomously
+
+The gate stops a dishonest move inside a pass. Nothing stopped a *human* from having to start
+each pass. The harness does:
+
+```bash
+make bugfixer-run LEDGER=tasks/TASK-123.md TEST_CMD='make test' AGENT=cursor
+```
+
+It runs the agent headlessly, phase by phase, and stops on evidence **the agent cannot fake**:
+
+| Condition | Result |
+|---|---|
+| the suite exits `0` | `DONE` |
+| `--max-passes` reached | `BLOCKED`, never `DONE` |
+| the same failing test set twice with no ledger change | `BLOCKED` — no progress |
+| ledger already `DONE`/`BLOCKED` | stop |
+
+The agent's own "all tests pass" is ignored. A run whose suite is red ends `BLOCKED` even if the
+agent wrote `STATUS: DONE` — that is asserted in `tests/test_bugfixer_harness.py`, because it is
+the single most common failure mode of autonomous agents.
+
+Artifacts per run: `logs/bugfixer-run-<stamp>/pass-NN/{prompt,agent.log,tests.log,result.json}`,
+plus one `F<n>` block per pass appended to the ledger.
+
+**Prerequisites.** `CURSOR_API_KEY` for `AGENT=cursor`, exported in the environment — never on the
+command line, where it would land in shell history. `AGENT=command AGENT_CMD='./my-agent {prompt}'`
+plugs in any other harness.
+
+**What it will not do.** No `sudo` (it refuses, and refuses to run as root), no parallel agents,
+no PRs. It also does not replace the gate: install `hooks/` as well, or the agent can still edit
+production code in Phase 1 within a pass.
+
+---
+
 ## Optional: enforce the loop with hooks
 
 The rules above are text. An optional gate turns three of them into mechanisms: the iteration

@@ -274,25 +274,29 @@ def read_status(ledger_text: str) -> str:
     run's status: TASK-078 says "STATUS: BLOCKED" inside its own rules table, and
     reading that as a live status would block a finished task forever.
 
+    ``PARTIAL`` is a continuation, not a terminal state: the run goes back to
+    Phase 2 to finish the listed remainder, so writes stay allowed. It is
+    reported distinctly so a reader is never told a partial run is complete.
+
     Args:
         ledger_text: Full ledger contents.
 
     Returns:
-        ``BLOCKED`` if any status line says so, else ``DONE`` if one does, else
-        ``RUNNING``.
+        ``BLOCKED`` if any status line says so, else ``DONE``, else ``PARTIAL``,
+        else ``RUNNING``. ``BLOCKED`` wins because it is the stricter of the
+        terminal states.
     """
     found = {
         match.group(1)
         for match in re.finditer(
-            r"^[ \t>*_-]{0,8}STATUS:[ \t]*(BLOCKED|DONE)\b",
+            r"^[ \t>*_-]{0,8}STATUS:[ \t]*(BLOCKED|DONE|PARTIAL)\b",
             ledger_text,
             re.MULTILINE,
         )
     }
-    if "BLOCKED" in found:
-        return "BLOCKED"
-    if "DONE" in found:
-        return "DONE"
+    for status in ("BLOCKED", "DONE", "PARTIAL"):
+        if status in found:
+            return status
     return "RUNNING"
 
 

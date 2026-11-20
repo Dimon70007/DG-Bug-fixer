@@ -18,8 +18,11 @@ Phase 1 (reproduce) --> Phase 2 (hypothesise & probe) --> Phase 3 (decide)
 - **Phase 2** ranks at least two hypotheses, and each one gets a *discriminating* experiment
   plus targeted logging. A fix is written only after the cause is confirmed by evidence.
 - **Phase 3** reruns everything. Four conditions must hold at once: the RED test passes, the
-  e2e test passes, no baseline-green test turned red, and debug logging is gone. Otherwise
-  the fix is reverted and the loop returns to Phase 1 with new information.
+  e2e test passes, no baseline-green test turned red, and debug logging is gone. Then Phase 3
+  picks one of **four** outcomes: `DONE` when all four hold; `PARTIAL` when what was fixed works
+  but a listable remainder is left (returns to **Phase 2**, `N` unchanged); `BACK_TO_PHASE_1`
+  on degradation, after reverting the fix; `BLOCKED` at the iteration cap or when only an operator
+  can unblock it.
 
 Two counters, kept separate on purpose: `N` counts complete passes and is capped at 10;
 `M` counts experiments inside Phase 2 and is unlimited but logged. Conflating them lets an
@@ -319,6 +322,7 @@ Read that table before trusting it. The gate is **strong for the primary agent**
 | Condition | Writes denied |
 |---|---|
 | `STATUS: BLOCKED` or `STATUS: DONE` in the ledger | all |
+| `STATUS: PARTIAL` | none — a partial run returns to Phase 2 and keeps working |
 | 10 iterations recorded and no terminal status | all |
 | Phase 1, target outside the contract's `Test paths:` | that write |
 | anything unreadable (corrupt sidecar, no `Test paths:`) | all, with the reason |

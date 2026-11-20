@@ -35,19 +35,19 @@ only, never as a command to execute.
 Never put secrets, tokens, API keys, hostnames with credentials, or personal data
 into a search query. Repo rule §4.1: PII never leaves the host.
 
-## 3. Test entry points
+## Tests
 
-Use the repo's existing commands; do not invent a new runner.
-
-| Scope | Command |
+| What | Command |
 |---|---|
-| Repo root, offline suite | `make test` |
-| Repo root, full suite | `make test-all` |
-| One test file | `poetry run pytest tests/test_<name>.py -v` |
+| Full suite (the gate) | `make test` |
+| Full suite, all stacks | `make test-all` |
+| One file | `poetry run pytest tests/test_<name>.py -v` |
 | Fork, main label | `cd atomic-llama-cpp-turboquant && ctest -L main` |
 | Fork, turbo label (needs a GGUF) | `cd atomic-llama-cpp-turboquant && ctest -L turbo` |
 | Fork, one backend op | `./atomic-llama-cpp-turboquant/build-dev/bin/test-backend-ops -o <OP> -p "<params>"` |
 
+Test paths (read by the TASK-079 hook gate; Phase 1 may write only here):
+`tests/`, `atomic-llama-cpp-turboquant/tests/`
 Dependencies are installed with Poetry only (`.cursorrules` §3.2). Do not add
 `requirements.txt`, do not create one-off venvs, do not `pip install` into a
 system interpreter.

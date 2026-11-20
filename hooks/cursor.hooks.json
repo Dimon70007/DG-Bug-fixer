@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "command": "__PYTHON__ __GATE__ --ledger __LEDGER__",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ]
+  }
+}

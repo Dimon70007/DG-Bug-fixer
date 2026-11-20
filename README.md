@@ -278,13 +278,80 @@ name should match `name`.
 
 ---
 
+## Optional: enforce the loop with hooks
+
+The rules above are text. An optional gate turns three of them into mechanisms: the iteration
+cap, the Phase-1 write ban, and "no writes after `BLOCKED`/`DONE`".
+
+```
+hooks/
+├── bugfixer_gate.py         # the decision (reads a harness payload on stdin)
+├── bugfixer_gate_state.py   # phase/status sidecar the skill advances
+├── cursor.hooks.json        # template -> .cursor/hooks.json
+├── claude.settings.json     # template -> .claude/settings.json
+├── codex.hooks.json         # template -> .codex/hooks.json
+├── opencode-plugin.ts       # -> .opencode/plugin/bugfixer-gate.ts
+└── openclaw-plugin.ts       # OpenClaw plugin entry
+```
+
+### How strong is it, per harness
+
+| Harness | Mechanism | Blocks the primary agent | Blocks subagents |
+|---|---|---|---|
+| Cursor | `preToolUse` + `failClosed: true` | yes | **no** — user hooks are absent in cloud agents |
+| Claude Code | `PreToolUse` + `onFailure: block` | yes | **no** — see [#40580](https://github.com/anthropics/claude-code/issues/40580) |
+| Codex | `PreToolUse` | yes | not documented |
+| OpenCode | `tool.execute.before` → `throw` | yes | **no** — see [#5894](https://github.com/anomalyco/opencode/issues/5894) |
+| OpenClaw | `before_tool_call` → `{ block: true }` | yes | inherits the plugin |
+
+Read that table before trusting it. The gate is **strong for the primary agent** and
+**advisory wherever a subagent can be spawned**. Claiming otherwise would be false.
+
+### Two footguns the templates already handle
+
+- **Claude Code exit `1` blocks nothing.** A crashing guard looks like permission. The template
+  sets `onFailure: "block"`.
+- **Cursor fails open by default** on crashes, timeouts, and non-`2` exits. The template sets
+  `failClosed: true`.
+
+### What the gate decides
+
+| Condition | Writes denied |
+|---|---|
+| `STATUS: BLOCKED` or `STATUS: DONE` in the ledger | all |
+| 10 iterations recorded and no terminal status | all |
+| Phase 1, target outside the contract's `Test paths:` | that write |
+| anything unreadable (corrupt sidecar, no `Test paths:`) | all, with the reason |
+
+`N` is counted from the `## Iteration N` headings in the ledger. A hook sees tool calls, not
+loops, so the ledger is the only honest source. The phase cannot be inferred at all, so it lives
+in a sidecar the skill advances:
+
+```bash
+python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md phase 2
+python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md status BLOCKED
+python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md
+```
+
+Unknown phase fails closed to Phase 1: only test paths may be written.
+
+### Not enforced
+
+- **Revert on degradation.** The gate cannot tell a revert from a rewrite.
+- **Subagent bypass.** Not fixable from a hook; documented above.
+- **"Is this write really needed".** The gate checks paths and status, not intent.
+
+---
+
 ## Limitations, stated plainly
 
 - **No enforcement.** The skill is text. Nothing mechanically prevents an agent from editing
   production code in Phase 1. The prohibition is written as a hard rule in `SKILL.md` and
   repeated in the contract, which improves compliance; it does not guarantee it.
-- **No iteration counter in code.** `N >= 10` is a written instruction, not a mechanism.
-  If your agent supports hooks, wire the limit there rather than trusting discipline.
+- **No iteration counter in code.** `N >= 10` is a written instruction, not a mechanism — unless
+  you install the optional hook gate (`hooks/`), which makes the cap and the Phase-1 write ban
+  enforced for the primary agent. It still cannot see subagent tool calls on Claude Code or
+  OpenCode.
 - **The ledger is prose.** `F<n>` blocks are markdown. Nothing validates that a block has an
   experiment, and a careless run can produce a well-formatted block with no evidence behind it.
 - **Not benchmarked.** No measurement of whether the skill improves fix quality against a

@@ -69,6 +69,34 @@ _WRITE_TOOLS: Final[frozenset[str]] = frozenset(
 #: Harness tool names that run shell commands.
 _SHELL_TOOLS: Final[frozenset[str]] = frozenset({"bash", "shell", "exec", "run_terminal_cmd", "terminal"})
 
+#: Harness tool names that provably cannot mutate the filesystem. Anything outside
+#: all three sets is *unknown*, and unknown is not silently allowed: during an
+#: active run it fails closed, because a harness renaming a tool must not turn the
+#: gate into decoration. Adding a name here is a deliberate act.
+_SAFE_TOOLS: Final[frozenset[str]] = frozenset(
+    {
+        "read",
+        "readfile",
+        "grep",
+        "search",
+        "glob",
+        "list",
+        "ls",
+        "find",
+        "webfetch",
+        "websearch",
+        "fetch",
+        "task",
+        "subagent",
+        "todowrite",
+        "todoread",
+        "notebookread",
+        "think",
+        "ask",
+        "askquestion",
+    }
+)
+
 #: Ledger line that opts a non-bug-fix run (tooling, refactor) out of the Phase-1
 #: write ban. Anchored: a ledger describing the marker must not satisfy it.
 _PHASE_GATE_OFF_RE: Final[re.Pattern[str]] = re.compile(
@@ -87,6 +115,23 @@ class Verdict:
 
     allow: bool
     reason: str = ""
+
+
+class UnknownToolError(RuntimeError):
+    """The payload names a tool the gate cannot classify as write or read-only.
+
+    Raised instead of assuming "not a write". A harness that renames a tool, or a
+    payload shape the gate has not seen, is a broken wiring: failing closed makes
+    it visible on the first call, where silence would let it run for weeks.
+    """
+
+
+class UnreadableCommandError(RuntimeError):
+    """A shell tool arrived without a readable command string."""
+
+
+class UnreadablePayloadError(RuntimeError):
+    """stdin held something that is not a JSON object."""
 
 
 def _allow(note: str = "") -> Verdict:
@@ -166,6 +211,11 @@ def _tool_input(event: dict[str, Any]) -> dict[str, Any]:
 
     Returns:
         Tool arguments, or an empty dict when the payload carries none.
+
+    Raises:
+        UnreadablePayloadError: When the arguments are a string that is not JSON —
+            silently returning ``{}`` would make the call unclassifiable and, before
+            this change, allowed.
     """
     for key in ("tool_input", "toolInput", "args", "arguments", "input"):
         value = event.get(key)
@@ -174,10 +224,15 @@ def _tool_input(event: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, str) and value.strip():
             try:
                 parsed = json.loads(value)
-            except json.JSONDecodeError:
-                return {}
+            except json.JSONDecodeError as exc:
+                raise UnreadablePayloadError(
+                    f"tool arguments in {key!r} are not valid JSON: {exc}"
+                ) from exc
             if isinstance(parsed, dict):
                 return parsed
+            raise UnreadablePayloadError(
+                f"tool arguments in {key!r} parsed to a {type(parsed).__name__}, not an object"
+            )
     return {}
 
 
@@ -204,9 +259,9 @@ def _shell_command(args: dict[str, Any]) -> str:
         args: Tool arguments.
 
     Returns:
-        Command string, or an empty string.
+        Command string, or an empty string when the payload names none.
     """
-    for key in ("command", "cmd", "script"):
+    for key in ("command", "cmd", "script", "command_line", "commandLine"):
         value = args.get(key)
         if isinstance(value, str):
             return value
@@ -216,19 +271,40 @@ def _shell_command(args: dict[str, Any]) -> str:
 def _is_write_attempt(tool: str, args: dict[str, Any]) -> tuple[bool, str]:
     """Classify a tool call as a write or not.
 
+    Three-way, because "not a write" and "I cannot tell" are different answers:
+
+    * a write tool, or a shell call whose command writes -> ``(True, detail)``;
+    * a known read-only tool -> ``(False, "")``;
+    * anything else, or a shell call whose command cannot be read -> the gate
+      raises, because guessing here is how a broken wiring becomes an allow.
+
     Args:
         tool: Lowercased tool name.
         args: Tool arguments.
 
     Returns:
         ``(True, path_or_command)`` when the call mutates the filesystem.
+
+    Raises:
+        UnknownToolError: When the call cannot be classified either way.
+        UnreadableCommandError: When the tool is a shell but no command is present.
     """
     if tool in _SHELL_TOOLS:
         command = _shell_command(args)
-        return bool(command and _WRITE_COMMAND_RE.search(command)), command
+        if not command:
+            raise UnreadableCommandError(
+                f"shell tool {tool!r} carried no readable command in its payload "
+                f"(keys seen: {sorted(args)})"
+            )
+        return bool(_WRITE_COMMAND_RE.search(command)), command
     if tool in _WRITE_TOOLS:
         return True, _target_path(args)
-    return False, ""
+    if tool in _SAFE_TOOLS:
+        return False, ""
+    raise UnknownToolError(
+        f"tool {tool!r} is neither a known write tool, a known shell tool, nor a known "
+        "read-only tool"
+    )
 
 
 # --- ledger ------------------------------------------------------------------
@@ -402,7 +478,22 @@ def decide(
     if ledger is None:
         return _allow("no bug-fixer ledger found; gate inactive")
 
-    is_write, detail = _is_write_attempt(tool, args)
+    try:
+        is_write, detail = _is_write_attempt(tool, args)
+    except UnknownToolError as exc:
+        # An active run plus a call the gate cannot classify is a wiring defect,
+        # not a read. Deny so the operator sees it on the first call.
+        return _deny(
+            f"{exc}. The gate cannot prove this call is safe, so it is denied. "
+            "Either the harness renamed a tool (fix the adapter) or the payload "
+            "shape changed (fix the gate)."
+        )
+    except UnreadableCommandError as exc:
+        return _deny(
+            f"{exc}. A shell call whose command cannot be read cannot be shown to be "
+            "test-only, so it is denied during an active run."
+        )
+
     if not is_write:
         return Verdict(allow=True)
 
@@ -491,17 +582,27 @@ def _is_code_write(detail: str, ledger: Path, tool: str) -> bool:
 def _read_event() -> dict[str, Any]:
     """Read the harness payload from stdin.
 
+    Empty stdin is ``{}``: a manual run with no payload, which the caller may then
+    treat as "no run active". Non-JSON on stdin is an error, not an empty event —
+    swallowing it would let a corrupt payload read as "gate inactive" and allow
+    every write in an active run.
+
     Returns:
-        Parsed payload, or an empty dict when stdin is empty or not JSON.
+        Parsed payload, or an empty dict when stdin is empty.
+
+    Raises:
+        UnreadablePayloadError: When stdin holds something that is not a JSON object.
     """
     raw = sys.stdin.read().strip()
     if not raw:
         return {}
     try:
         parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError as exc:
+        raise UnreadablePayloadError(f"stdin is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise UnreadablePayloadError(f"stdin is a {type(parsed).__name__}, not a JSON object")
+    return parsed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -520,8 +621,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ledger", default=None, help="ledger file; overrides the payload")
     args = parser.parse_args(argv)
 
-    event = _read_event()
+    try:
+        event = _read_event()
+    except UnreadablePayloadError as exc:
+        _fail_closed(f"cannot read the hook payload: {exc}")
+
     ledger = _resolve_ledger(event, args.ledger)
+    if args.ledger and ledger is None:
+        # The adapter names a ledger explicitly, so a missing one is a broken
+        # install, not "no run active". Treating it as inactive disables the gate
+        # silently for the whole run.
+        _fail_closed(
+            f"--ledger {args.ledger} does not exist; the adapter is pointed at a file "
+            "that is not there"
+        )
     verdict = decide(ledger=ledger, tool=_tool_name(event), args=_tool_input(event))
     _emit(verdict)
     return EXIT_ALLOW if verdict.allow else EXIT_DENY

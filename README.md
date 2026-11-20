@@ -360,14 +360,18 @@ hooks/
 
 | Harness | Mechanism | Blocks the primary agent | Blocks subagents |
 |---|---|---|---|
-| Cursor | `preToolUse` + `failClosed: true` | yes | **no** — user hooks are absent in cloud agents |
-| Claude Code | `PreToolUse` + `onFailure: block` | yes | **no** — see [#40580](https://github.com/anthropics/claude-code/issues/40580) |
-| Codex | `PreToolUse` | yes | not documented |
+| Cursor | `preToolUse` + `failClosed: true` | yes | tool hooks **do** fire in subagents, but the payload carries no `agent_id`; `sessionStart` is absent in cloud agents |
+| Claude Code | `PreToolUse` + `onFailure: block` | yes | **contested** — the hooks reference says they run in subagents with `agent_id`; [#88441](https://github.com/anthropics/claude-code/issues/88441) reports otherwise. Do not claim it without naming the version |
+| Codex | `PreToolUse` (must be **trusted**; a changed definition is skipped until re-trusted) | yes | not documented |
 | OpenCode | `tool.execute.before` → `throw` | yes | **no** — see [#5894](https://github.com/anomalyco/opencode/issues/5894) |
-| OpenClaw | `before_tool_call` → `{ block: true }` | yes | inherits the plugin |
+| OpenClaw | `before_tool_call` → `{ block: true }` | yes | unknown — `spawn_agent` is gateable, the child's own calls are undocumented |
 
-Read that table before trusting it. The gate is **strong for the primary agent** and
-**advisory wherever a subagent can be spawned**. Claiming otherwise would be false.
+Read that table before trusting it. For the full nine-column matrix — per-harness hook shapes,
+path rules, invocation syntax, tool vocabularies, each cell sourced or marked *unknown* — see
+`docs/skill-harness-matrix.md` in the parent repository. It is not shipped with the skill: a
+standalone clone installs only this directory, so the link would be dead there. The gate is
+**strong for the primary agent** and **advisory wherever a subagent can be spawned**. Claiming
+otherwise would be false.
 
 ### Two footguns the templates already handle
 

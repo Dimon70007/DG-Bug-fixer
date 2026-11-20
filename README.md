@@ -55,15 +55,28 @@ two filled examples.
 bug-fixer/
 ├── SKILL.md                      # the skill: phases, counters, prohibitions
 ├── LICENSE                       # MIT
+├── install.py                    # installer (not copied into targets)
+├── install.sh                    # argv forwarder for install.py
 ├── references/
 │   ├── workflow.md               # how to build a discriminator, anti-patterns
 │   ├── project-contract.md       # TEMPLATE: fill this for your project
 │   └── repo-contract.md          # filled example: linux_to_mac only
+├── hooks/                        # optional enforcement gate + harness matrix
+│   ├── bugfixer_gate.py
+│   ├── bugfixer_gate_state.py
+│   ├── verify_harnesses.py
+│   └── *.json, *.ts              # adapter templates per agent
+├── runner/
+│   └── bugfixer_run.py           # optional autonomous loop
 └── templates/
     └── finding-block.md          # F<n> block to append to the task file
 ```
 
-`SKILL.md` is the only file loaded up front. References load when the skill needs them.
+`SKILL.md` is the only file loaded up front. Everything else is optional tooling: the skill
+works by copying this folder, and the gate and runner are extra layers you opt into.
+
+**The skill is self-contained.** The installer, the gate, and the runner all live inside this
+directory, so a clone of this repository installs itself without any parent project.
 
 ---
 
@@ -86,11 +99,24 @@ that phase requires writing a fix and rerunning the suite.
 ## Install
 
 The format is the same everywhere: a folder named `bug-fixer` containing `SKILL.md`.
-Pick the destination for your agent, then restart the session (or start a new chat) so the
-skill metadata is re-read.
+Pick the destination, then restart the session (or start a new chat) so the skill metadata
+is re-read.
 
-> The clone below uses HTTPS so it works without an SSH key. Replace it with
-> `git@github.com:Dimon70007/DG-Bug-fixer.git` if you already have a key set up.
+The skill carries its own installer, so a clone needs nothing else:
+
+```bash
+git clone https://github.com/Dimon70007/DG-Bug-fixer.git ~/src/bug-fixer
+cd ~/src/bug-fixer
+./install.sh --target cursor            # into the git checkout this clone sits in
+./install.sh --target personal          # ~/.cursor/skills, every project
+./install.sh --target all --dry-run     # show the plan, write nothing
+```
+
+> The clone uses HTTPS so it works without an SSH key. Replace it with
+> `git@github.com:Dimon70007/DG-Bug-fixer.git` if you have a key set up.
+
+The per-agent sections below give the destination each target means; the commands are the
+same `./install.sh --target …` in every case.
 
 ### Cursor
 
@@ -100,13 +126,8 @@ skill metadata is re-read.
 | Every project | `~/.cursor/skills/bug-fixer/` |
 
 ```bash
-git clone https://github.com/Dimon70007/DG-Bug-fixer.git /tmp/dg-bug-fixer
-
-# every project
-mkdir -p ~/.cursor/skills && cp -R /tmp/dg-bug-fixer ~/.cursor/skills/bug-fixer
-
-# or one project
-mkdir -p .cursor/skills && cp -R /tmp/dg-bug-fixer .cursor/skills/bug-fixer
+./install.sh --target personal     # every project
+./install.sh --target cursor       # the current project
 ```
 
 Cursor also reads `.agents/skills/` and `~/.agents/skills/`, and the Claude and Codex
@@ -121,7 +142,8 @@ let the description trigger it.
 | Every project | `~/.claude/skills/bug-fixer/` |
 
 ```bash
-mkdir -p ~/.claude/skills && cp -R /tmp/dg-bug-fixer ~/.claude/skills/bug-fixer
+./install.sh --target personal-claude     # every project
+./install.sh --target claude              # the current project
 ```
 
 ### Codex
@@ -135,7 +157,8 @@ Official locations, per OpenAI's skill docs:
 | Admin / machine-wide | `/etc/codex/skills/bug-fixer/` |
 
 ```bash
-mkdir -p ~/.agents/skills && cp -R /tmp/dg-bug-fixer ~/.agents/skills/bug-fixer
+./install.sh --target personal-agents     # every project
+./install.sh --target codex               # the current project
 ```
 
 Invoke with `$bug-fixer` or `/skills` to browse. Older guides mention `~/.codex/skills/`;
@@ -149,7 +172,8 @@ OpenAI's current documentation lists `.agents/skills` for repo and user scope.
 | Every project | `~/.config/opencode/skills/bug-fixer/` |
 
 ```bash
-mkdir -p ~/.config/opencode/skills && cp -R /tmp/dg-bug-fixer ~/.config/opencode/skills/bug-fixer
+./install.sh --target personal-opencode   # every project
+./install.sh --target opencode            # the current project
 ```
 
 The global path is `~/.config/opencode/skills`, **not** `~/.opencode/skills`; several
@@ -164,7 +188,7 @@ in both scopes, so an install there works for OpenCode too.
 | Managed / shared | `~/.openclaw/skills/bug-fixer/` |
 
 ```bash
-mkdir -p ~/workspace/skills && cp -R /tmp/dg-bug-fixer ~/workspace/skills/bug-fixer
+./install.sh --target openclaw --dest ~/workspace
 ```
 
 Or install from the registry or straight from Git:

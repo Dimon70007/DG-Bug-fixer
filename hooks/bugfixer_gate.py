@@ -69,6 +69,12 @@ _WRITE_TOOLS: Final[frozenset[str]] = frozenset(
 #: Harness tool names that run shell commands.
 _SHELL_TOOLS: Final[frozenset[str]] = frozenset({"bash", "shell", "exec", "run_terminal_cmd", "terminal"})
 
+#: Ledger line that opts a non-bug-fix run (tooling, refactor) out of the Phase-1
+#: write ban. Anchored: a ledger describing the marker must not satisfy it.
+_PHASE_GATE_OFF_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t>*_-]{0,8}Phase gate:[ \t]*off\b", re.MULTILINE | re.IGNORECASE
+)
+
 
 @dataclass(frozen=True)
 class Verdict:
@@ -422,7 +428,7 @@ def decide(
         )
 
     phase = read_phase(ledger)
-    if phase == 1 and _is_code_write(detail, ledger, tool):
+    if phase == 1 and phase_gate_enabled(text) and _is_code_write(detail, ledger, tool):
         return _deny(
             "Phase 1 forbids production-code changes. Write the failing test, the e2e test "
             "and the baseline first; move to Phase 2 with `bugfixer state <ledger> phase 2` "
@@ -430,6 +436,23 @@ def decide(
         )
 
     return Verdict(allow=True)
+
+
+def phase_gate_enabled(ledger_text: str) -> bool:
+    """Whether the Phase-1 write ban applies to this ledger.
+
+    Tooling tasks (building the guard itself, refactors) are not bug-fix runs, so
+    the Phase-1 "tests only" rule would lock them out of their own files. They opt
+    out with an anchored `Phase gate: off` line. The ban is on by default: an
+    opt-out has to be written deliberately, in a line someone can grep.
+
+    Args:
+        ledger_text: Full ledger contents.
+
+    Returns:
+        ``False`` only when the ledger opts out.
+    """
+    return _PHASE_GATE_OFF_RE.search(ledger_text) is None
 
 
 def _is_code_write(detail: str, ledger: Path, tool: str) -> bool:

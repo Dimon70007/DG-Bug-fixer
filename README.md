@@ -1,39 +1,65 @@
 # bug-fixer
 
-A three-phase debugging skill for coding agents. It stops the agent from writing a fix
-before the cause is known.
+A five-phase debugging skill for coding agents. It stops the agent from writing a fix before
+the cause is known, and it makes every fix a probe of a **named** hypothesis.
 
 ```
-Phase 1 (reproduce) --> Phase 2 (hypothesise & probe) --> Phase 3 (decide)
-     ^                                                        |
-     |                       degradation (N < 10) ------------+
-     |                                        |
-     +----------------------------------------+
-                        N >= 10 --> BLOCKED (ask the user)
-                        success --> DONE
+Phase 0 (setup, outside the automaton: project contract + ## Clarifications)
+
+Phase 1 (baseline) --REPRODUCED--> Phase 2 (route)
+                                      |         |
+                        ALREADY_TRIED |         | FIRST_GUESS
+                                      v         v
+                            Phase 3 (research) --HYPOTHESIS_READY--> Phase 4 (probe)
+                                      ^                                   |
+                                      |                                   | PROVEN
+                    QUEUE_EXHAUSTED / DEEPEN_SAME                         v
+                                      |                            Phase 5 (decide)
+                                      +-----------------------------------+
+
+Phase 4 is a loop: NEXT_IN_QUEUE (4->4) takes the next hypothesis by Rank.
+Terminals by status, not by edge: BLOCKED, LIMIT_REACHED (A = 10), DONE, PARTIAL.
 ```
 
 - **Phase 1** builds a failing test, an e2e test, and a full-suite baseline. No production
-  code changes are allowed yet.
-- **Phase 2** ranks at least two hypotheses, and each one gets a *discriminating* experiment
-  plus targeted logging. A fix is written only after the cause is confirmed by evidence.
-- **Phase 3** reruns everything. Four conditions must hold at once: the RED test passes, the
-  e2e test passes, no baseline-green test turned red, and debug logging is gone. Then Phase 3
-  picks one of **four** outcomes: `DONE` when all four hold; `PARTIAL` when what was fixed works
-  but a listable remainder is left (returns to **Phase 2**, `N` unchanged); `BACK_TO_PHASE_1`
-  on degradation, after reverting the fix; `BLOCKED` at the iteration cap or when only an operator
-  can unblock it.
+  code changes are allowed yet, and the task must be clarified first: 3–7 `Q:`/`A:` pairs, or
+  a named `Clarification gap:`, or explicit `Assumption:` lines in a headless run.
+- **Phase 2** routes. If an `Attempt <k> consumed` line already exists and nothing is
+  confirmed, it goes to research; otherwise it writes exactly one obvious hypothesis `H0` and
+  goes straight to the probe phase. It does not edit code.
+- **Phase 3** researches: collects logs, searches by the exact lines it found, and writes each
+  candidate as `### H<n>`. A `Merge:` line records whether any predictions coincided.
+- **Phase 4** probes one hypothesis at a time, by `Rank`. RED on the target tests, then the code
+  change (`Attempt`), then GREEN on the full suite. Each iteration writes its own
+  `### F<n>` block and ends in a verdict.
+- **Phase 5** runs only after `CONFIRMED`. Four conditions must hold at once: the RED test
+  passes, the e2e test passes, no baseline-green test turned red, and debug logging is gone.
+  Then it picks `DONE`, `PARTIAL` (with `## Remaining`), or `BLOCKED` (with `Причина` and
+  `Логи`).
 
-Two counters, kept separate on purpose: `N` counts complete passes and is capped at 10;
-`M` counts experiments inside Phase 2 and is unlimited but logged. Conflating them lets an
-agent burn its iteration budget on half-hypotheses, or the reverse.
+**Eight named edges, and two of them lead `4→3`.** `QUEUE_EXHAUSTED` (refuted, nothing left to
+probe → research again) and `DEEPEN_SAME` (partially right → deepen the same hypothesis) are
+different verdicts with different proofs. They are why the transition table is keyed by edge
+name rather than by phase pair: a pair-keyed dict holds one of them and silently loses the
+other.
 
-Findings go into the **target task file** as `F<n>` blocks. This skill does not create a
-`DEBUG.md`; one ledger, not two.
+Two counters, both derived from the ledger:
+
+| Counter | Counts | Limit |
+|---|---|---|
+| `A` | probes that reached a code change (`Attempt <k> consumed`) | **10** |
+| `R<h>` | re-runs of one hypothesis's target tests (`Recheck H<n> #<k>`) | **5** |
+
+`Recheck` does **not** consume `A`: repairing a broken test is repairing the instrument, not
+new work. `A` can be reset only by the operator, on a `Counter reset: A -> 0 (by operator: …)`
+line.
+
+Findings go into the **target task file** as `H<n>` and `F<n>` blocks. This skill does not
+create a `DEBUG.md`; one ledger, not two.
 
 ### It is project-agnostic, and it adapts before it works
 
-The three phases are the same everywhere. The commands are not: a Rust crate runs
+The five phases are the same everywhere. The commands are not: a Rust crate runs
 `cargo test`, a Python service runs `make test`, and some projects have no web access at
 all. So before Phase 1 the skill reads a **project contract** and takes four values from it:
 
@@ -53,23 +79,25 @@ two filled examples.
 
 ```
 bug-fixer/
-├── SKILL.md                      # the skill: phases, counters, prohibitions
+├── SKILL.md                      # the skill: phases, edges, counters, prohibitions
 ├── LICENSE                       # MIT
 ├── install.py                    # installer (not copied into targets)
 ├── install.sh                    # argv forwarder for install.py
 ├── references/
-│   ├── workflow.md               # how to build a discriminator, anti-patterns
+│   ├── workflow.md               # discriminators, results tables, anti-patterns
 │   ├── project-contract.md       # TEMPLATE: fill this for your project
 │   └── repo-contract.md          # filled example: linux_to_mac only
 ├── hooks/                        # optional enforcement gate + harness matrix
 │   ├── bugfixer_gate.py
 │   ├── bugfixer_gate_state.py
+│   ├── bugfixer_secrets.py       # secret scanner for records and diffs
 │   ├── verify_harnesses.py
 │   └── *.json, *.ts              # adapter templates per agent
 ├── runner/
 │   └── bugfixer_run.py           # optional autonomous loop
 └── templates/
-    └── finding-block.md          # F<n> block to append to the task file
+    ├── finding-block.md          # F<n> block to append to the task file
+    └── hypothesis-block.md       # H<n> block, one format for H0 and H1…Hn
 ```
 
 `SKILL.md` is the only file loaded up front. Everything else is optional tooling: the skill
@@ -87,12 +115,12 @@ The skill is instructions, not code. It can do nothing the agent cannot already 
 | Capability | Needed for | If missing |
 |---|---|---|
 | Edit files in the repo | writing tests, logging, the ledger | skill cannot run; nothing to fall back on |
-| Run the project's test command | Phase 1 baseline, Phase 3 gate | blocked at Phase 1: no baseline means no regression check |
+| Run the project's test command | Phase 1 baseline, Phase 4 GREEN gate | blocked at Phase 1: no baseline means no regression check |
 | Write to the ledger path | recording findings | skill stops and asks for a path |
-| A search tool, if the contract allows one | Phase 2.1 only | Phase 2.1 is skipped; hypotheses come from Phase 1 evidence |
+| A search tool, if the contract allows one | Phase 3 steps 3.3–3.4 | those steps are skipped; hypotheses come from Phase 1 evidence |
 
-A read-only agent can reproduce and hypothesise, but it cannot complete Phase 3, because
-that phase requires writing a fix and rerunning the suite.
+A read-only agent can reproduce and hypothesise, but it cannot complete Phase 4, because that
+phase requires writing a fix and rerunning the suite.
 
 ---
 
@@ -325,10 +353,15 @@ It runs the agent headlessly, phase by phase, and stops on evidence **the agent 
 
 The agent's own "all tests pass" is ignored. A run whose suite is red ends `BLOCKED` even if the
 agent wrote `STATUS: DONE` — that is asserted in `tests/test_bugfixer_harness.py`, because it is
-the single most common failure mode of autonomous agents.
+the single most common failure mode of autonomous agents. A green suite **without** a results
+table is also `BLOCKED`: a fix whose effect was never measured is the case `PROVEN` refuses, and
+reporting it as done would claim success for a change nobody can check. `A = 10` ends the run
+with `LIMIT_REACHED`.
 
 Artifacts per run: `logs/bugfixer-run-<stamp>/pass-NN/{prompt,agent.log,tests.log,result.json}`,
-plus one `F<n>` block per pass appended to the ledger.
+plus one `F<n>` block per pass appended to the ledger. That block carries `Kind | research` and
+claims **no** verdict: a verdict belongs to the agent that saw the logs, or the pipeline would
+prove its own hypothesis.
 
 **Prerequisites.** `CURSOR_API_KEY` for `AGENT=cursor`, exported in the environment — never on the
 command line, where it would land in shell history. `AGENT=command AGENT_CMD='./my-agent {prompt}'`
@@ -336,19 +369,21 @@ plugs in any other harness.
 
 **What it will not do.** No `sudo` (it refuses, and refuses to run as root), no parallel agents,
 no PRs. It also does not replace the gate: install `hooks/` as well, or the agent can still edit
-production code in Phase 1 within a pass.
+production code outside Phase 4 within a pass.
 
 ---
 
 ## Optional: enforce the loop with hooks
 
-The rules above are text. An optional gate turns three of them into mechanisms: the iteration
-cap, the Phase-1 write ban, and "no writes after `BLOCKED`/`DONE`".
+The rules above are text. An optional gate turns them into mechanisms: the attempt cap, the
+"Phase 4 only" write ban, the required `Working on:` marker, the counter numbering, the secret
+scan, and "no writes after a terminal status".
 
 ```
 hooks/
 ├── bugfixer_gate.py         # the decision (reads a harness payload on stdin)
-├── bugfixer_gate_state.py   # phase/status sidecar the skill advances
+├── bugfixer_gate_state.py   # eight named edges + the phase sidecar
+├── bugfixer_secrets.py      # scanner; usable as --diff by the agent itself
 ├── cursor.hooks.json        # template -> .cursor/hooks.json
 ├── claude.settings.json     # template -> .claude/settings.json
 ├── codex.hooks.json         # template -> .codex/hooks.json
@@ -384,62 +419,87 @@ otherwise would be false.
 
 | Condition | Writes denied |
 |---|---|
-| `STATUS: BLOCKED` or `STATUS: DONE` in the ledger | all |
-| `STATUS: PARTIAL` | none — a partial run returns to Phase 2 and keeps working |
-| 10 iterations recorded and no terminal status | all |
-| Phase 1, target outside the contract's `Test paths:` | that write |
+| Ledger is a 2.1 file (`## Iteration N`, no `### H<n>`, no `Kind` field) | all, with "finish it under 2.1 or start a new ledger" |
+| `STATUS: BLOCKED`, `DONE`, `PARTIAL`, `LIMIT_REACHED` in the ledger | all |
+| a `STATUS:` word the gate does not know | all — an unreadable status is not "probably RUNNING" |
+| Phases 1, 2, 3 and 5, target outside the contract's `Test paths:` | that write |
+| Phase 4 without `Working on: H<n>` pointing at an existing hypothesis | that write |
+| two `Working on:` lines, or `Attempt`/`Recheck` written as a table row | that write |
+| attempt numbering with a gap, `Recheck #6`, or an 11th hypothesis (checked on a transition) | the transition |
+| a secret in a `### F<n>` record | that write |
 | anything unreadable (corrupt sidecar, no `Test paths:`) | all, with the reason |
 
-`N` is counted from the `## Iteration N` headings in the ledger. A hook sees tool calls, not
-loops, so the ledger is the only honest source. The phase cannot be inferred at all, so it lives
-in a sidecar the skill advances:
+`A` is counted from the `Attempt <k> consumed` lines, after the last operator reset. A hook
+sees tool calls, not loops, so the ledger is the only honest source. The phase cannot be
+inferred at all, so it lives in a sidecar that only the state machine may move:
 
 ```bash
-python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md phase 2
+python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md edges     # the eight names
+python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md advance 2 --evidence "RED + baseline + 3Q"
+python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md advance 3 --edge DEEPEN_SAME --evidence "delta 7->2"
 python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md status BLOCKED
 python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md
 ```
 
-Unknown phase fails closed to Phase 1: only test paths may be written.
+A phase pair with two meanings (`4→3`) **requires** `--edge`: the gate refuses to guess which
+one you meant, because they differ in verdict, proof and what happens next.
 
 ### Not enforced
 
-- **Revert on degradation.** The gate cannot tell a revert from a rewrite.
+- **Revert on degradation.** The gate cannot tell a revert from a rewrite; it can only require
+  the `Revert:` line.
+- **Whether a change really was a probe of the named hypothesis.** The marker is checked, the
+  edit's meaning is not. A human reads that in the report.
+- **Whether two target tests cover different behaviour.** The gate counts them; it does not
+  judge them.
+- **Whether `Resolution:` is a good criterion.** Presence is checked; quality is read.
+- **That a flaky bug really got three runs.** One `ФАКТ (RED):` marker does not count repeats.
 - **Subagent bypass.** Not fixable from a hook; documented above.
-- **"Is this write really needed".** The gate checks paths and status, not intent.
+- **"Is this write really needed".** The gate checks paths, markers and status, not intent.
 
 ---
 
 ## Limitations, stated plainly
 
 - **No enforcement.** The skill is text. Nothing mechanically prevents an agent from editing
-  production code in Phase 1. The prohibition is written as a hard rule in `SKILL.md` and
+  production code outside Phase 4. The prohibition is written as a hard rule in `SKILL.md` and
   repeated in the contract, which improves compliance; it does not guarantee it.
-- **No iteration counter in code.** `N >= 10` is a written instruction, not a mechanism — unless
-  you install the optional hook gate (`hooks/`), which makes the cap and the Phase-1 write ban
-  enforced for the primary agent. It still cannot see subagent tool calls on Claude Code or
-  OpenCode.
-- **The ledger is prose.** `F<n>` blocks are markdown. Nothing validates that a block has an
-  experiment, and a careless run can produce a well-formatted block with no evidence behind it.
+- **No counter in code unless the gate is installed.** `A >= 10` is a written instruction, not a
+  mechanism — unless you install the optional hook gate (`hooks/`), which enforces the cap, the
+  Phase-4-only write ban, the `Working on:` marker, the counter numbering and the secret scan for
+  the primary agent. It still cannot see subagent tool calls on Claude Code or OpenCode.
+- **The ledger is prose.** `H<n>` and `F<n>` blocks are markdown. The gate requires the markers a
+  verdict needs, but a well-formatted block with a hollow probe behind it is still possible; the
+  gate cannot tell a real experiment from a plausible narrative.
 - **Not benchmarked.** No measurement of whether the skill improves fix quality against a
   baseline. The one recorded run (above) is a demonstration, not a controlled comparison.
 - **Assumes a task file exists.** It needs somewhere to write findings. Projects tracked only
   in an external issue tracker need a local file convention first.
 
-These are the honest limits. Each is a candidate for a hook, a script, or a test — none is
-in place today.
+These are the honest limits. Each is a candidate for a hook, a script, or a test — some are now
+enforced, and the rest are listed rather than implied.
 
 ---
 
 ## Design notes
 
-**Why a state machine and not a checklist.** Without an explicit edge back to Phase 1, agents
-either abandon a bug after one failed fix or keep polishing a wrong hypothesis. The edge is
-named `BACK_TO_PHASE_1` and requires new information to justify it.
+**Why five phases and not three.** In 2.1 the fix was written inside the hypothesis phase, so
+that phase both guessed and edited — and the shortcuts it took (no "did the test actually fail"
+step, no secret scan) were invisible until someone compared the two paths. Now the edit happens
+in exactly one phase, so the asymmetric shortcut is impossible by construction.
 
-**Why a baseline in Phase 1.** Phase 3 asks "did I break anything". Without the list of tests
+**Why edges are named.** Two different reasons lead from probe back to research: all hypotheses
+refuted (go find new ones), and one hypothesis partially right (deepen that one). Keyed by phase
+pair, the second silently overwrote the first, and a partial verdict with a non-empty queue could
+not leave Phase 4 at all. The name is the key; the pair is a field.
+
+**Why a baseline in Phase 1.** Phase 5 asks "did I break anything". Without the list of tests
 that were already red, that question cannot be answered, and every pre-existing failure
 becomes indistinguishable from a regression.
+
+**Why clarification is a precondition, not advice.** A task understood wrongly produces a
+working solution to a different problem. The gate cannot judge the answers, but it can require
+that the asking happened.
 
 **Why search on evidence, not on the problem statement.** Searching `NullReferenceException at
 Foo.bar` finds prior art; searching "the program crashes" does not.
@@ -447,7 +507,7 @@ Foo.bar` finds prior art; searching "the program crashes" does not.
 **Why the ledger is the task file.** A separate debug log drifts from the task and is lost
 between sessions. Findings belong where the next reader looks first.
 
-**Why the project contract is a separate file.** The three phases are universal; the
+**Why the project contract is a separate file.** The five phases are universal; the
 commands are not. Baking `make test` into a skill makes it wrong in every project that does
 not have a Makefile, and an agent that cannot find the mandated command improvises. A file
 read at startup keeps the skill portable and makes the project-specific assumptions

@@ -35,6 +35,31 @@ from typing import Any, Final, Sequence
 #: This file lives at <skill>/runner/bugfixer_run.py, so the skill directory is two up.
 SKILL_DIR: Final[Path] = Path(__file__).resolve().parent.parent
 STATE_CLI: Final[Path] = SKILL_DIR / "hooks" / "bugfixer_gate_state.py"
+_HOOKS: Final[Path] = SKILL_DIR / "hooks"
+
+if str(_HOOKS) not in sys.path:
+    sys.path.insert(0, str(_HOOKS))
+
+import bugfixer_gate as ledger_readers  # noqa: E402 - path set up above
+
+#: Statuses that end a run without further passes.
+TERMINAL_STATUSES: Final[tuple[str, ...]] = (
+    "BLOCKED",
+    "DONE",
+    "PARTIAL",
+    "LIMIT_REACHED",
+)
+
+#: Edges tried, in order, when a pass leaves a phase ready to move on. The guard
+#: decides: the runner never forces a transition, it only offers the edge that the
+#: phase's own evidence would justify.
+_EDGES_FROM: Final[dict[int, tuple[tuple[str, int], ...]]] = {
+    1: (("REPRODUCED", 2),),
+    2: (("ALREADY_TRIED", 3), ("FIRST_GUESS", 4)),
+    3: (("HYPOTHESIS_READY", 4),),
+    4: (("PROVEN", 5), ("NEXT_IN_QUEUE", 4), ("QUEUE_EXHAUSTED", 3), ("DEEPEN_SAME", 3)),
+}
+
 
 #: Commands that must never appear: the agent runs unprivileged, per repo rule 6.2.
 _FORBIDDEN_CMDS: Final[tuple[str, ...]] = ("sudo", "su", "doas", "pkexec")
@@ -148,25 +173,18 @@ def _current_phase(ledger: Path) -> int:
 
 
 def _ledger_status(ledger: Path) -> str:
-    """Read a terminal status from the ledger, using the gate's anchoring rule.
+    """Read a terminal status from the ledger, using the gate's own reader.
+
+    A second copy of the status rule would drift from the first, and then the
+    runner and the gate would disagree about whether a run is still live.
 
     Args:
         ledger: Ledger file.
 
     Returns:
-        ``BLOCKED``, ``DONE``, ``PARTIAL``, or ``RUNNING``.
+        ``BLOCKED``, ``LIMIT_REACHED``, ``DONE``, ``PARTIAL``, or ``RUNNING``.
     """
-    text = ledger.read_text(encoding="utf-8", errors="replace")
-    found = {
-        match.group(1)
-        for match in re.finditer(
-            r"^[ \t>*_-]{0,8}STATUS:[ \t]*(BLOCKED|DONE|PARTIAL)\b", text, re.MULTILINE
-        )
-    }
-    for status in ("BLOCKED", "DONE", "PARTIAL"):
-        if status in found:
-            return status
-    return "RUNNING"
+    return ledger_readers.read_status(ledger.read_text(encoding="utf-8", errors="replace"))
 
 
 _FAILING_RE: Final[re.Pattern[str]] = re.compile(
@@ -190,6 +208,10 @@ def _failing_ids(output: str) -> list[str]:
 def _prompt_for(phase: int, ledger: Path) -> str:
     """Build the bounded prompt for one pass.
 
+    Each phase prompt names the markers that phase must write, because the runner
+    is headless: the agent cannot ask whether it recorded the right thing, and the
+    gate will refuse the transition it cannot see.
+
     Args:
         phase: Phase the run is in, as observed from the sidecar.
         ledger: Ledger file the agent must write into.
@@ -200,25 +222,62 @@ def _prompt_for(phase: int, ledger: Path) -> str:
     common = (
         f"You are running the bug-fixer skill on {ledger}.\n"
         "Read SKILL.md and the project contract before acting.\n"
+        "No one is watching this run: there is no user to ask, so state assumptions "
+        "instead of asking questions.\n"
         "Do not use sudo. Do not edit production code outside the current phase's rules.\n"
+        "Every marker the gate reads must be a whole line, never a table cell.\n"
     )
-    if phase == 1:
+    if phase in (0, 1):
         return common + (
-            "PHASE 1 (reproduce). Write the failing test that reproduces the bug and run it. "
-            "Run the full suite unchanged to capture the baseline. Then append to the ledger, "
-            "each on its own line: `FAILING TEST: <command> -> <observed>`, "
-            "`BASELINE: <pass>/<total>, already red: <ids>`."
+            "PHASE 0/1 (setup and baseline).\n"
+            "Step 0.3 first: this run is headless, so there is no user to ask. Do not skip "
+            "clarification — write your assumptions as `Assumption:` lines under "
+            "`## Clarifications`, at least one per unknown. An unstated assumption cannot be "
+            "challenged by the operator later.\n"
+            "Then write the failing test that reproduces the bug and run it. Run the full "
+            "suite unchanged to capture the baseline. Append to the ledger, each on its own "
+            "line: `FAILING TEST: <command> -> <observed>`, "
+            "`BASELINE: <pass>/<total>, red: <ids>`."
         )
     if phase == 2:
         return common + (
-            "PHASE 2 (hypothesise & probe). Rank at least two hypotheses. For each, run one "
-            "discriminating experiment and record the finding as an `F<n>` block with `Fact` and "
-            "a `**Verdict.**` line. Only after a verdict says CONFIRMED may you change code."
+            "PHASE 2 (route). Do NOT change production code here.\n"
+            "If an `Attempt <k> consumed` line already exists and nothing is CONFIRMED, the "
+            "route is research: write `### F<n> — route` with `Kind | route`.\n"
+            "Otherwise create exactly one obvious hypothesis `### H0 — <assertion>` with "
+            "`Rank 1`, `Proposed` pointing at the route record, `Origin: description`, "
+            "`Mechanism`, `Prediction`, a `#### Records` bullet `- F<n> → PROPOSED`, and the "
+            "single line `Working on: H0`."
+        )
+    if phase == 3:
+        return common + (
+            "PHASE 3 (research). Do NOT change production code here; logging is allowed.\n"
+            "Collect logs, search by the exact lines you found, and write every candidate as "
+            "`### H<n>` with `Rank`, `Proposed`, `Origin: logs+search`, `Mechanism`, "
+            "`Prediction`, `Discriminator`, and `#### Records`.\n"
+            "Write a `Merge:` line on every pass, including `Merge: none — <why>`.\n"
+            "Name the next hypothesis to probe with `Working on: H<n>`."
+        )
+    if phase == 4:
+        return common + (
+            "PHASE 4 (probe). Exactly one hypothesis per pass, named by the existing "
+            "`Working on: H<n>` line — do not rewrite it to a different hypothesis.\n"
+            "Record the results table with the `До`, `После`, `Порог`, `Вывод` columns, then "
+            "the markers: `ФАКТ (RED):`, `ФАКТ (логи):`, `Bug: stable|flaky`, "
+            "`Attempt <k> consumed` after the code change, a `Secrets scan:` line, and "
+            "`ФАКТ (GREEN):`. Finish with one `### F<n>` block (`Kind | probe`) whose "
+            "`Outcome` states the verdict.\n"
+            "A refuted probe records `Revert:` before moving on; a partial one records "
+            "`ФАКТ (дельта):` with three numbers, or `ФАКТ (регрессия): <test>` and a "
+            "`Revert:`."
         )
     return common + (
-        "PHASE 3 (decide). Rerun the full suite plus the Phase-1 failing test. Compare against "
-        "the baseline. Do not claim success: the orchestrator runs the tests itself. If the work "
-        "is incomplete and the remainder is listable, write `## Remaining` and `STATUS: PARTIAL`."
+        "PHASE 5 (decide). Rerun the full suite plus the Phase-1 failing test unless pass 4 "
+        "already ran it with no code change since. Do not claim success: the orchestrator runs "
+        "the tests itself.\n"
+        "Check the four §9 conditions and the results table, then write `## Report` and exactly "
+        "one status: `STATUS: DONE` when all four hold, `STATUS: PARTIAL` with `## Remaining`, "
+        "or `STATUS: BLOCKED` with `Причина` and `Логи`."
     )
 
 
@@ -295,19 +354,34 @@ def _agent_env() -> dict[str, str]:
     return dict(os.environ)
 
 
-def _advance(ledger: Path, target: int, evidence: str) -> bool:
+def _advance(ledger: Path, target: int, evidence: str, *, edge: str | None = None) -> bool:
     """Ask the FSM to advance, respecting its guards.
+
+    The runner never forces a phase: it offers the edge the pass's own evidence
+    would justify and lets the guard decide. A refusal is printed, not swallowed.
 
     Args:
         ledger: Ledger file.
         target: Destination phase.
         evidence: Why the transition is justified.
+        edge: Edge name; required when the phase pair has two meanings (``4→3``).
 
     Returns:
         ``True`` when the transition succeeded.
     """
+    argv = [
+        sys.executable,
+        str(STATE_CLI),
+        str(ledger),
+        "advance",
+        str(target),
+        "--evidence",
+        evidence,
+    ]
+    if edge:
+        argv += ["--edge", edge]
     result = subprocess.run(
-        [sys.executable, str(STATE_CLI), str(ledger), "advance", str(target), "--evidence", evidence],
+        argv,
         text=True,
         capture_output=True,
         check=False,
@@ -318,8 +392,60 @@ def _advance(ledger: Path, target: int, evidence: str) -> bool:
     return True
 
 
+def _offer_transition(ledger: Path, phase: int, pass_index: int) -> int:
+    """Offer every edge out of ``phase``; the first whose guard agrees wins.
+
+    Ordering matters for the pair with two meanings: at ``4→3`` the refuted case is
+    offered before the partial one, and the guard's own verdict check rejects the
+    wrong one rather than the runner guessing.
+
+    Args:
+        ledger: Ledger file.
+        phase: Current phase.
+        pass_index: Pass number, for the evidence line.
+
+    Returns:
+        The phase reached, or ``phase`` when no guard agreed.
+    """
+    for edge_name, target in _EDGES_FROM.get(phase, ()):
+        evidence = f"pass {pass_index}: {edge_name} offered by the orchestrator"
+        if _advance(ledger, target, evidence, edge=edge_name):
+            return target
+    return phase
+
+
+def _has_results_table(ledger: Path) -> bool:
+    """Whether the ledger's most recent probe carries a §11 results table.
+
+    Runner-side success is stricter than "the suite is green": a green suite with no
+    before/after numbers is the case the gate refuses at ``PROVEN``, and a runner that
+    accepted it would report a fix nobody can check.
+
+    Args:
+        ledger: Ledger file.
+
+    Returns:
+        ``True`` when the current probe record has the required columns.
+    """
+    text = ledger.read_text(encoding="utf-8", errors="replace")
+    probes = [record for record in ledger_readers.parse_records(text) if record.kind == "probe"]
+    if not probes:
+        return False
+    body = probes[-1].body
+    for row in re.findall(r"^\|.*\|[ \t]*$", body, re.MULTILINE):
+        normalized = row.lower()
+        if all(column in normalized for column in ("до", "после", "порог", "вывод")):
+            return True
+    return False
+
+
 def _append_finding(ledger: Path, result: PassResult) -> None:
-    """Append one ``F<n>`` block describing the pass.
+    """Append one ``### F<n>`` block describing the pass.
+
+    The block carries the orchestrator's own observations under a `Kind` the gate
+    recognises, and deliberately does **not** claim a verdict: a verdict belongs to
+    the agent, which saw the logs. Writing `CONFIRMED` here would let the pipeline
+    prove its own hypothesis.
 
     Args:
         ledger: Ledger file.
@@ -332,7 +458,13 @@ def _append_finding(ledger: Path, result: PassResult) -> None:
     block = (
         f"\n### F{index} — orchestrator pass {result.index} (phase {result.phase})\n\n"
         f"| Field | Value |\n|---|---|\n"
-        f"| Iteration | `N` = {result.index} |\n"
+        f"| Kind | research |\n"
+        f"| Scope | task |\n"
+        f"| Responds to | — |\n"
+        f"| Supersedes | — |\n"
+        f"| Iteration | {result.index} |\n"
+        f"| Outcome | ORCHESTRATOR PASS |\n\n"
+        f"| Field | Value |\n|---|---|\n"
         f"| Agent exit | `{result.agent_exit}` |\n"
         f"| Test exit | `{result.test_exit}` |\n"
         f"| Failing | {failing} |\n"
@@ -344,14 +476,23 @@ def _append_finding(ledger: Path, result: PassResult) -> None:
 
 
 def _write_status(ledger: Path, status: str) -> None:
-    """Write the terminal status line, replacing any previous one.
+    """Write the terminal status line, replacing any previous status with a note.
+
+    The old line is kept, commented out, rather than deleted: the earlier status is
+    part of what happened, and a run that was ``BLOCKED`` and then ``DONE`` should
+    say so where a reader will see it.
 
     Args:
         ledger: Ledger file.
-        status: ``DONE`` or ``BLOCKED``.
+        status: One of :data:`TERMINAL_STATUSES`.
     """
     text = ledger.read_text(encoding="utf-8", errors="replace")
-    text = re.sub(r"^[ \t>*_-]{0,8}STATUS:.*$\n?", "", text, flags=re.MULTILINE)
+    text = re.sub(
+        r"^[ \t>*_-]{0,8}STATUS:[ \t]*(.*)$",
+        lambda match: f"<!-- was: STATUS: {match.group(1)} -->",
+        text,
+        flags=re.MULTILINE,
+    )
     with ledger.open("w", encoding="utf-8") as handle:
         handle.write(text.rstrip("\n") + f"\n\nSTATUS: {status}\n")
 
@@ -474,7 +615,7 @@ def run(plan: Plan, *, dry_run: bool, resume: bool) -> int:
             continue
 
         status = _ledger_status(plan.ledger)
-        if status in {"DONE", "BLOCKED"}:
+        if status in TERMINAL_STATUSES:
             print(f"==> ledger already {status}; stopping")
             done = status == "DONE"
             break
@@ -519,8 +660,28 @@ def run(plan: Plan, *, dry_run: bool, resume: bool) -> int:
         _append_finding(plan.ledger, result)
         ledger_before = plan.ledger.read_text(encoding="utf-8", errors="replace")
 
+        # `A` is the cap the spec actually names. Reaching it is a terminal status,
+        # not a reason to keep passing: the attempt limit exists so the loop ends.
+        try:
+            attempts = ledger_readers.count_attempts(ledger_after)
+        except ledger_readers.CounterResetError as exc:
+            print(f"==> pass {index}: {exc}")
+            _write_status(plan.ledger, "BLOCKED")
+            break
+        if attempts >= ledger_readers.MAX_ATTEMPTS:
+            print(f"==> pass {index}: attempt cap reached ({attempts}) — LIMIT_REACHED")
+            _write_status(plan.ledger, "LIMIT_REACHED")
+            break
+
         if test_exit == 0:
-            print(f"==> pass {index}: suite green — DONE")
+            if not _has_results_table(plan.ledger):
+                print(
+                    f"==> pass {index}: suite green but no results table — the fix is "
+                    "unverifiable, so this is not DONE"
+                )
+                _write_status(plan.ledger, "BLOCKED")
+                break
+            print(f"==> pass {index}: suite green with a results table — DONE")
             _write_status(plan.ledger, "DONE")
             done = True
             break
@@ -531,11 +692,9 @@ def run(plan: Plan, *, dry_run: bool, resume: bool) -> int:
             break
         previous_failing = failing
 
-        # Advance the phase only when its guard agrees; never force it.
-        if phase == 1 and "BASELINE:" in ledger_after and "FAILING TEST:" in ledger_after:
-            _advance(plan.ledger, 2, f"pass {index}: reproduction and baseline recorded")
-        elif phase == 2 and re.search(r"\bCONFIRMED\b", ledger_after):
-            _advance(plan.ledger, 3, f"pass {index}: a hypothesis is confirmed")
+        # Offer the edges out of this phase; each guard decides on the ledger's own
+        # evidence. The runner never forces a transition.
+        _offer_transition(plan.ledger, phase, index)
 
     else:
         print(f"==> cap reached ({plan.max_passes} passes) without a green suite")

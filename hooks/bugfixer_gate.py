@@ -20,25 +20,129 @@ call in every repository gets uninstalled within a day.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Final, NoReturn
+
+# The hooks directory is not a package: the gate is executed by path from a
+# harness, so its own directory must be importable for the sibling scanner.
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+import bugfixer_secrets as secrets
 
 #: Exit codes shared with every adapter.
 EXIT_ALLOW: Final[int] = 0
 EXIT_DENY: Final[int] = 2
 
-#: Hard cap on complete passes through Phase 1 -> 2 -> 3.
-MAX_ITERATIONS: Final[int] = 10
-
 #: Sidecar suffix, next to the ledger.
 STATE_SUFFIX: Final[str] = ".bugfixer.json"
 
-#: Ledger heading that advances the iteration counter.
-_ITERATION_RE: Final[re.Pattern[str]] = re.compile(r"^#{1,4}\s*Iteration\s+(\d+)\b", re.MULTILINE)
+#: Probes that reached a code change (``Attempt <k> consumed``).
+MAX_ATTEMPTS: Final[int] = 10
+
+#: Re-runs of one hypothesis (``Recheck H<n> #<k>``).
+MAX_RECHECKS: Final[int] = 5
+
+#: Hypotheses per task — equal to :data:`MAX_ATTEMPTS`: each probe costs a code change.
+MAX_HYPOTHESES: Final[int] = 10
+
+#: Marker-line prefix: list/quote/emphasis marks, but deliberately **not** ``|``,
+#: so a table row cannot satisfy a marker (invariant 17b).
+_PREFIX: Final[str] = r"^[ \t>*_-]{0,8}"
+
+#: ``Attempt <k> consumed`` — one probe that reached a code change.
+_ATTEMPT_RE: Final[re.Pattern[str]] = re.compile(_PREFIX + r"Attempt\s+(\d+)\s+consumed\b", re.MULTILINE)
+
+#: ``Recheck H<n> #<k>`` — one re-run of a broken target test.
+_RECHECK_RE: Final[re.Pattern[str]] = re.compile(_PREFIX + r"Recheck\s+(H\d+)\s+#(\d+)\b", re.MULTILINE)
+
+#: Counter reset. Only the operator may write it, and the reason is mandatory.
+_COUNTER_RESET_RE: Final[re.Pattern[str]] = re.compile(
+    _PREFIX + r"Counter reset:\s*A\s*->\s*0\s*\(by operator([^)]*)\)", re.MULTILINE
+)
+
+#: Any counter-reset line, to catch a reset that failed the strict form above.
+_COUNTER_RESET_ANY_RE: Final[re.Pattern[str]] = re.compile(_PREFIX + r"Counter reset:", re.MULTILINE)
+
+#: ``### H<n> — assertion`` — en dash, as everywhere in the project.
+_HYPOTHESIS_HEADING_RE: Final[re.Pattern[str]] = re.compile(r"^###\s+(H\d+)\s+—\s+(.+)$", re.MULTILINE)
+
+#: ``### F<n> — title``.
+_RECORD_HEADING_RE: Final[re.Pattern[str]] = re.compile(r"^###\s+(F\d+)\s+—\s+(.+)$", re.MULTILINE)
+
+#: ``Working on: H<n>`` — the active-hypothesis pointer.
+_WORKING_ON_RE: Final[re.Pattern[str]] = re.compile(_PREFIX + r"Working on:\s*(H\d+)\s*$", re.MULTILINE)
+
+#: Start of any level-2/3 heading, used to bound a block's body.
+_BLOCK_END_RE: Final[re.Pattern[str]] = re.compile(r"^#{2,3}\s", re.MULTILINE)
+
+#: A ``| Field | Value |`` row inside a block table.
+_TABLE_ROW_RE: Final[re.Pattern[str]] = re.compile(r"^\|\s*([^|]+?)\s*\|\s*(.*?)\s*\|\s*$", re.MULTILINE)
+
+#: A ``#### Records`` bullet: ``- F3 → REFUTED``.
+_RECORD_LINK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*[-*][ \t]+(F\d+)[ \t]*→[ \t]*([A-Z][A-Z ]*)", re.MULTILINE
+)
+
+#: Table-form attempt, e.g. ``| Attempt | 3 consumed |`` — a format error, not a marker.
+_TABLE_ATTEMPT_RE: Final[re.Pattern[str]] = re.compile(r"^\|.*\bAttempt\b.*\bconsumed\b", re.MULTILINE)
+
+#: Table-form recheck, e.g. ``| Recheck | H1 #1 |``.
+_TABLE_RECHECK_RE: Final[re.Pattern[str]] = re.compile(r"^\|.*\bRecheck\b.*#\d+", re.MULTILINE)
+
+#: Reasons `BLOCKED` may carry (spec §9). A closed list, so `Причина: because` is not a reason.
+BLOCKED_REASONS: Final[tuple[str, ...]] = (
+    "no-reproduction",
+    "baseline-wrong",
+    "metrics-conflict",
+    "contradictory-proof",
+    "operator-needed",
+)
+
+#: ``Причина: <value>`` — the field that makes `BLOCKED` actionable.
+_BLOCKED_REASON_RE: Final[re.Pattern[str]] = re.compile(
+    _PREFIX + r"Причина:[ \t]*([^\n]*)", re.MULTILINE
+)
+
+#: ``Логи: <path or lines>`` — the other half of `BLOCKED`.
+_LOGS_RE: Final[re.Pattern[str]] = re.compile(_PREFIX + r"Логи:[ \t]*(\S[^\n]*)", re.MULTILINE)
+
+#: The ``## Report`` section (invariant 19).
+_REPORT_RE: Final[re.Pattern[str]] = re.compile(r"^##[ \t]+Report[ \t]*$", re.MULTILINE)
+
+#: The ``## Remaining`` section (invariant 28).
+_REMAINING_RE: Final[re.Pattern[str]] = re.compile(r"^##[ \t]+Remaining[ \t]*$", re.MULTILINE)
+
+#: A bullet under ``## Remaining``: a heading alone is not a handover.
+_REMAINING_ITEM_RE: Final[re.Pattern[str]] = re.compile(r"^[ \t]*[-*][ \t]+\S", re.MULTILINE)
+
+#: The task block: everything from ``## Task`` to the next level-2 heading.
+_TASK_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^##[ \t]+Task[ \t]*$(.*?)(?=^##[ \t]|\Z)", re.MULTILINE | re.DOTALL
+)
+
+#: Fingerprint length for the task block. Short on purpose: it detects a rewrite,
+#: it is not a security boundary, and a long hex string invites copy-paste fixes.
+_TASK_FINGERPRINT_CHARS: Final[int] = 16
+
+#: Ledger heading that only 2.x wrote. ``Iteration`` was the pass marker; 3.0 records
+#: the pass in ``| Iteration | <n> |`` of a block instead.
+_LEGACY_ITERATION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^#{1,4}\s*Iteration\s+\d+\b", re.MULTILINE
+)
+
+#: The 2.x finding header. 3.0 numbers records the same way, so this alone proves nothing.
+_LEGACY_FINDING_RE: Final[re.Pattern[str]] = re.compile(r"^#{1,4}\s*F\d+\b", re.MULTILINE)
+
+#: Verdicts a ``#### Records`` bullet may carry. ``PARTIALLY``/``DEGRADED`` keep the
+#: hypothesis unchecked: it is deepened, not retired (§5.1).
+_UNCHECKED_VERDICTS: Final[frozenset[str]] = frozenset({"PROPOSED", "PARTIALLY", "DEGRADED"})
 
 #: Shell constructs that write to disk. Deliberately conservative: a false deny
 #: is noisy, a false allow is a silent bypass.
@@ -117,6 +221,75 @@ class Verdict:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class RecordLink:
+    """One entry of a hypothesis's ``#### Records`` list.
+
+    Attributes:
+        id: Record that produced the verdict, e.g. ``"F3"``.
+        verdict: Verdict keyword as written, e.g. ``"REFUTED"``.
+    """
+
+    id: str
+    verdict: str
+
+
+@dataclass(frozen=True)
+class Hypothesis:
+    """A ``### H<n>`` sub-task (§5.1).
+
+    Attributes:
+        id: Hypothesis id, e.g. ``"H2"``.
+        assertion: The one-line claim from the heading.
+        rank: Probe order, 1-based; ``0`` when absent or unreadable.
+        status: Derived from ``records``, never read from the ``Status`` field.
+        declared_status: The ``Status`` table field as written; only compared, never trusted.
+        proposed: Record that introduced the hypothesis.
+        origin: ``description`` (phase 2) or ``logs+search`` (phase 3).
+        mechanism: How the cause produces the symptom.
+        prediction: What will be observed if the cause is right.
+        discriminator: How it differs from a neighbouring hypothesis.
+        records: Verdict history, oldest first.
+    """
+
+    id: str
+    assertion: str
+    rank: int
+    status: str
+    declared_status: str
+    proposed: str
+    origin: str
+    mechanism: str
+    prediction: str
+    discriminator: str
+    records: list[RecordLink]
+
+
+@dataclass(frozen=True)
+class Record:
+    """A ``### F<n>`` record: one baseline, research round, or probe (§5.2).
+
+    Attributes:
+        id: Record id, e.g. ``"F5"``.
+        title: Heading text after the en dash.
+        kind: ``route``, ``research``, or ``probe`` — distinguishes the writer.
+        scope: ``task`` or a hypothesis id.
+        responds_to: Previous record in the chain, or empty.
+        supersedes: Record this one replaces, or empty.
+        outcome: ``Outcome`` table field, verbatim.
+        body: Full block text, for markers that live in prose.
+    """
+
+    id: str
+    title: str
+    kind: str
+    scope: str
+    responds_to: str
+    supersedes: str
+    outcome: str
+    body: str
+
+
 class UnknownToolError(RuntimeError):
     """The payload names a tool the gate cannot classify as write or read-only.
 
@@ -132,6 +305,18 @@ class UnreadableCommandError(RuntimeError):
 
 class UnreadablePayloadError(RuntimeError):
     """stdin held something that is not a JSON object."""
+
+
+class CounterResetError(RuntimeError):
+    """A counter reset that the operator did not authorize.
+
+    ``A`` is the only counter that can be reset, and only by the operator. An
+    agent-written reset would make the limit decorative.
+    """
+
+
+class AmbiguousMarkerError(RuntimeError):
+    """A marker whose value cannot be determined without guessing."""
 
 
 def _allow(note: str = "") -> Verdict:
@@ -335,19 +520,6 @@ def _resolve_ledger(event: dict[str, Any], explicit: str | None) -> Path | None:
     return None
 
 
-def count_iterations(ledger_text: str) -> int:
-    """Count completed iterations in a ledger.
-
-    Args:
-        ledger_text: Full ledger contents.
-
-    Returns:
-        The highest ``## Iteration N`` number seen, or ``0``.
-    """
-    numbers = [int(match.group(1)) for match in _ITERATION_RE.finditer(ledger_text)]
-    return max(numbers) if numbers else 0
-
-
 def read_status(ledger_text: str) -> str:
     """Read the run status from a dedicated status line in the ledger.
 
@@ -356,30 +528,660 @@ def read_status(ledger_text: str) -> str:
     run's status: TASK-078 says "STATUS: BLOCKED" inside its own rules table, and
     reading that as a live status would block a finished task forever.
 
-    ``PARTIAL`` is a continuation, not a terminal state: the run goes back to
-    Phase 2 to finish the listed remainder, so writes stay allowed. It is
-    reported distinctly so a reader is never told a partial run is complete.
+    ``PARTIAL`` is terminal for the automaton in 3.0: the experience lives in
+    ``## Remaining`` and in the refuted hypotheses, so the next attempt is a new
+    task that reads this one. Writes are still denied — a partial run is finished.
 
     Args:
         ledger_text: Full ledger contents.
 
     Returns:
-        ``BLOCKED`` if any status line says so, else ``DONE``, else ``PARTIAL``,
-        else ``RUNNING``. ``BLOCKED`` wins because it is the stricter of the
-        terminal states.
+        ``BLOCKED`` if any status line says so, else ``LIMIT_REACHED``, ``DONE``,
+        ``PARTIAL``, else ``RUNNING``. ``UNREADABLE`` when a status line exists but
+        carries a word the gate does not know — invariant 15: an unknown status is
+        denied, not read as ``RUNNING``.
     """
-    found = {
-        match.group(1)
-        for match in re.finditer(
-            r"^[ \t>*_-]{0,8}STATUS:[ \t]*(BLOCKED|DONE|PARTIAL)\b",
-            ledger_text,
-            re.MULTILINE,
-        )
-    }
-    for status in ("BLOCKED", "DONE", "PARTIAL"):
+    known = {"BLOCKED", "LIMIT_REACHED", "DONE", "PARTIAL", "RUNNING"}
+    found: set[str] = set()
+    for match in re.finditer(
+        r"^[ \t>*_-]{0,8}STATUS:[ \t]*([A-Za-z_-]+)", ledger_text, re.MULTILINE
+    ):
+        word = match.group(1).upper()
+        if word not in known:
+            return "UNREADABLE"
+        found.add(word)
+    for status in ("BLOCKED", "LIMIT_REACHED", "DONE", "PARTIAL"):
         if status in found:
             return status
     return "RUNNING"
+
+
+# --- ledger readers (v3) -----------------------------------------------------
+
+
+def _block_body(text: str, start: int) -> str:
+    """Slice a ``###`` block from its heading to the next level-2/3 heading.
+
+    Args:
+        text: Full ledger contents.
+        start: Offset of the block heading.
+
+    Returns:
+        Block text, heading included.
+    """
+    end = _BLOCK_END_RE.search(text, start + 1)
+    return text[start : end.start() if end else len(text)]
+
+
+def _fields(block: str) -> dict[str, str]:
+    """Read a block's ``| Field | Value |`` table.
+
+    Args:
+        block: Block text.
+
+    Returns:
+        Lowercased field name to value. First occurrence wins, so a later duplicate
+        cannot silently override the field a reader already used.
+    """
+    fields: dict[str, str] = {}
+    for name, value in _TABLE_ROW_RE.findall(block):
+        key = name.strip().lower()
+        if key in {"field", "value"} or set(key) <= {"-", ":"}:
+            continue
+        fields.setdefault(key, value.strip())
+    return fields
+
+
+def _records_section(block: str) -> str:
+    """Slice the ``#### Records`` list out of a hypothesis block.
+
+    Args:
+        block: Hypothesis block text.
+
+    Returns:
+        Text after the ``#### Records`` heading, or empty when absent.
+    """
+    match = re.search(r"^####\s+Records\s*$", block, re.MULTILINE)
+    if match is None:
+        return ""
+    tail = block[match.end() :]
+    next_heading = re.search(r"^#{2,4}\s", tail, re.MULTILINE)
+    return tail[: next_heading.start()] if next_heading else tail
+
+
+def _record_links(block: str) -> list[RecordLink]:
+    """Parse the ``#### Records`` bullets of a hypothesis block.
+
+    Args:
+        block: Hypothesis block text.
+
+    Returns:
+        Links in file order, which is the order the verdicts happened in.
+    """
+    return [
+        RecordLink(id=record_id, verdict=verdict.strip())
+        for record_id, verdict in _RECORD_LINK_RE.findall(_records_section(block))
+    ]
+
+
+def derive_status(hypothesis: Hypothesis) -> str:
+    """Derive a hypothesis status from its records.
+
+    The ``Status`` table field is a display convenience and is never the source of
+    truth: a field can be edited without doing the work, a record cannot.
+
+    ``PARTIALLY`` and ``DEGRADED`` keep the hypothesis **unchecked** (``PROPOSED``):
+    a partial hit is deepened by the same hypothesis, not retired, so it stays in
+    the queue.
+
+    Args:
+        hypothesis: Parsed hypothesis.
+
+    Returns:
+        ``PROPOSED``, ``CONFIRMED``, or ``REFUTED``.
+    """
+    if not hypothesis.records:
+        return "PROPOSED"
+    verdict = hypothesis.records[-1].verdict.upper()
+    if verdict.startswith("CONFIRMED"):
+        return "CONFIRMED"
+    if verdict.startswith("REFUTED"):
+        return "REFUTED"
+    return "PROPOSED"
+
+
+def parse_hypotheses(text: str) -> dict[str, Hypothesis]:
+    """Parse every ``### H<n> — …`` block in the ledger.
+
+    One parser for ``H0`` and ``H1…Hn``: a second format would drift from the
+    first, and ``H0`` is not special enough to earn one.
+
+    Args:
+        text: Full ledger contents.
+
+    Returns:
+        Hypothesis id to parsed hypothesis. Duplicate ids keep the first block and
+        are reported by the caller, not silently merged.
+    """
+    hypotheses: dict[str, Hypothesis] = {}
+    for match in _HYPOTHESIS_HEADING_RE.finditer(text):
+        hyp_id = match.group(1)
+        block = _block_body(text, match.start())
+        fields = _fields(block)
+        raw_rank = fields.get("rank", "")
+        rank = int(raw_rank) if raw_rank.isdigit() else 0
+        draft = Hypothesis(
+            id=hyp_id,
+            assertion=match.group(2).strip(),
+            rank=rank,
+            status="PROPOSED",
+            declared_status=fields.get("status", ""),
+            proposed=fields.get("proposed", ""),
+            origin=fields.get("origin", ""),
+            mechanism=fields.get("mechanism", ""),
+            prediction=fields.get("prediction", ""),
+            discriminator=fields.get("discriminator", ""),
+            records=_record_links(block),
+        )
+        hypotheses.setdefault(
+            hyp_id, replace(draft, status=derive_status(draft))
+        )
+    return hypotheses
+
+
+def parse_records(text: str) -> list[Record]:
+    """Parse every ``### F<n> — …`` block in the ledger.
+
+    Args:
+        text: Full ledger contents.
+
+    Returns:
+        Records in file order.
+    """
+    records: list[Record] = []
+    for match in _RECORD_HEADING_RE.finditer(text):
+        block = _block_body(text, match.start())
+        fields = _fields(block)
+        records.append(
+            Record(
+                id=match.group(1),
+                title=match.group(2).strip(),
+                kind=fields.get("kind", "").lower(),
+                scope=fields.get("scope", ""),
+                responds_to=fields.get("responds to", ""),
+                supersedes=fields.get("supersedes", ""),
+                outcome=fields.get("outcome", ""),
+                body=block,
+            )
+        )
+    return records
+
+
+def count_attempts(text: str) -> int:
+    """Count probes that reached a code change, honouring an operator reset.
+
+    Args:
+        text: Full ledger contents.
+
+    Returns:
+        Number of ``Attempt <k> consumed`` lines after the last authorized reset.
+
+    Raises:
+        CounterResetError: When any reset line is not the strict operator form.
+            A reset the operator did not authorize would make the cap decorative.
+    """
+    resets = list(_COUNTER_RESET_ANY_RE.finditer(text))
+    authorized = list(_COUNTER_RESET_RE.finditer(text))
+    if len(resets) != len(authorized):
+        raise CounterResetError(
+            "a `Counter reset:` line is missing its authorization. Only the operator may "
+            "reset the counter, and the line must read "
+            "`Counter reset: A -> 0 (by operator: <reason>)`. An agent-written reset is "
+            "not a reset."
+        )
+    start = authorized[-1].end() if authorized else 0
+    return len(_ATTEMPT_RE.findall(text[start:]))
+
+
+def count_rechecks(text: str, hypothesis: str) -> int:
+    """Count re-runs of one hypothesis's target tests.
+
+    Args:
+        text: Full ledger contents.
+        hypothesis: Hypothesis id, e.g. ``"H1"``.
+
+    Returns:
+        Highest ``Recheck H<n> #<k>`` number for that hypothesis, or ``0``.
+    """
+    numbers = [
+        int(number)
+        for hyp, number in _RECHECK_RE.findall(text)
+        if hyp.upper() == hypothesis.upper()
+    ]
+    return max(numbers) if numbers else 0
+
+
+def active_hypothesis(text: str) -> str:
+    """Read the ``Working on: H<n>`` pointer.
+
+    Args:
+        text: Full ledger contents.
+
+    Returns:
+        Hypothesis id, or empty when no marker is present.
+
+        Raises:
+        AmbiguousMarkerError: When more than one marker line exists. The marker is
+            moved by rewriting it, so two lines mean the rewrite went wrong — and
+            guessing which one is live would attach an edit to the wrong hypothesis.    """
+    markers = _WORKING_ON_RE.findall(text)
+    if len(markers) > 1:
+        raise AmbiguousMarkerError(
+            "the ledger has more than one `Working on:` line ("
+            + ", ".join(markers)
+            + "). Rewrite the single marker instead of appending a second one, so an "
+            "edit cannot be attributed to the wrong hypothesis."
+        )
+    return markers[0] if markers else ""
+
+
+def count_hypotheses(text: str) -> int:
+    """Count ``### H<n>`` blocks.
+
+    Args:
+        text: Full ledger contents.
+
+    Returns:
+        Number of hypothesis headings, duplicates included.
+    """
+    return len(_HYPOTHESIS_HEADING_RE.findall(text))
+
+
+def unchecked_hypotheses(text: str) -> list[Hypothesis]:
+    """List hypotheses that still need a probe, ordered by ``Rank``.
+
+    Args:
+        text: Full ledger contents.
+
+    Returns:
+        Hypotheses whose derived status is ``PROPOSED`` (including a partial hit that
+        must be deepened), sorted by rank then id.
+    """
+    parsed = parse_hypotheses(text).values()
+    return sorted(
+        (hypothesis for hypothesis in parsed if hypothesis.status in {"PROPOSED"}),
+        key=lambda hypothesis: (hypothesis.rank, hypothesis.id),
+    )
+
+
+def table_form_attempt(text: str) -> bool:
+    """Whether the ledger writes an attempt or recheck as a table row.
+
+    Args:
+        text: Full ledger contents.
+
+    Returns:
+        ``True`` when the rejected table form is present.
+    """
+    return bool(_TABLE_ATTEMPT_RE.search(text) or _TABLE_RECHECK_RE.search(text))
+
+
+def checked_hypotheses(text: str) -> list[Hypothesis]:
+    """List hypotheses that already have a verdict.
+
+    Args:
+        text: Full ledger contents.
+
+    Returns:
+        Hypotheses whose derived status is not ``PROPOSED``, sorted by rank.
+    """
+    return sorted(
+        (hypothesis for hypothesis in parse_hypotheses(text).values() if hypothesis.status != "PROPOSED"),
+        key=lambda hypothesis: (hypothesis.rank, hypothesis.id),
+    )
+
+
+def counter_problems(text: str) -> list[str]:
+    """Validate attempt, recheck and hypothesis numbering.
+
+    Numbering is a real signal: ``Attempt`` ``{1..n}`` with a gap means a line was
+    deleted, and an attempt count that cannot be trusted makes every cap
+    meaningless. ``Recheck`` is per hypothesis and does not touch ``A``: fixing a
+    broken test is repairing the instrument, not new work.
+
+    Args:
+        text: Full ledger contents.
+
+    Returns:
+        Refusals, in the order the ledger should fix them. Empty when numbering is
+        sound.
+    """
+    problems: list[str] = []
+
+    try:
+        count_attempts(text)  # raises on an unauthorized reset
+    except CounterResetError as exc:
+        problems.append(str(exc))
+        return problems
+
+    reset_at = [match.end() for match in _COUNTER_RESET_RE.finditer(text)]
+    start = reset_at[-1] if reset_at else 0
+    attempts = [int(number) for number in _ATTEMPT_RE.findall(text[start:])]
+    expected = 1
+    for number in attempts:
+        if number != expected:
+            problems.append(
+                f"Attempt numbering has a gap at {expected}: found `Attempt {number} consumed`. "
+                "Attempts are numbered from 1 with no gaps, so a deleted line is visible."
+            )
+            break
+        expected += 1
+    total = len(attempts)
+    if total > MAX_ATTEMPTS:
+        problems.append(
+            f"{total} attempts recorded, cap is {MAX_ATTEMPTS}. Write `STATUS: LIMIT_REACHED` "
+            "with `## Report` instead of another change."
+        )
+
+    for hypothesis, numbers in _rechecks_by_hypothesis(text).items():
+        expected_number = 1
+        for number in numbers:
+            if number != expected_number:
+                problems.append(
+                    f"`Recheck {hypothesis}` numbering has a gap at #{expected_number}: "
+                    f"found #{number}."
+                )
+                break
+            expected_number += 1
+        highest = max(numbers)
+        if highest > MAX_RECHECKS:
+            problems.append(
+                f"`Recheck {hypothesis} #{highest}` exceeds the limit of {MAX_RECHECKS}. "
+                "Reformulate the hypothesis or admit it is not testable — repeating the same "
+                "run a sixth time is not evidence."
+            )
+
+    hypotheses = count_hypotheses(text)
+    if hypotheses > MAX_HYPOTHESES:
+        problems.append(
+            f"{hypotheses} hypotheses recorded, limit is {MAX_HYPOTHESES}. Keep the ten most "
+            "probable: thirty hypotheses with none probed is not research."
+        )
+
+    for hypothesis_id in _rechecked_hypotheses(text):
+        if recheck_without_probe(text, hypothesis_id):
+            problems.append(
+                f"`Recheck {hypothesis_id}` without a probe: there is no verdict to repeat. "
+                "A recheck repairs the test after a run that did not settle the question."
+            )
+            break
+
+    return problems
+
+
+def _rechecks_by_hypothesis(text: str) -> dict[str, list[int]]:
+    """Group recheck numbers by hypothesis, in file order.
+
+    Args:
+        text: Full ledger contents.
+
+    Returns:
+        Hypothesis id to its recheck numbers.
+    """
+    grouped: dict[str, list[int]] = {}
+    for hypothesis, number in _RECHECK_RE.findall(text):
+        grouped.setdefault(hypothesis, []).append(int(number))
+    return grouped
+
+
+def _rechecked_hypotheses(text: str) -> list[str]:
+    """Hypotheses named by a ``Recheck`` line, including ones with no block.
+
+    A recheck for a hypothesis that does not exist is exactly the case worth
+    reporting; iterating the parsed blocks would silently skip it.
+
+    Args:
+        text: Full ledger contents.
+
+    Returns:
+        Hypothesis ids in first-seen order.
+    """
+    return list(_rechecks_by_hypothesis(text))
+
+
+def recheck_without_probe(text: str, hypothesis: str) -> bool:
+    """Whether a hypothesis has rechecks but no probe at all.
+
+    Args:
+        text: Full ledger contents.
+        hypothesis: Hypothesis id.
+
+    Returns:
+        ``True`` when rechecks exist for a hypothesis that was never probed.
+    """
+    rechecked = any(
+        hyp.upper() == hypothesis.upper() for hyp, _ in _RECHECK_RE.findall(text)
+    )
+    if not rechecked:
+        return False
+    probed = any(
+        record.scope.upper() == hypothesis.upper()
+        for record in parse_records(text)
+        if record.kind in {"probe", "research"}
+    )
+    return not probed
+
+
+def task_fingerprint(text: str) -> str:
+    """Fingerprint of the ``## Task`` block.
+
+    The task may legitimately be refined; ``## Clarifications`` exists for that. But
+    if the task block itself now says something else, the report should say so:
+    fixing a different bug than the one filed is not a detail. This is a
+    **warning**, not a refusal — the operator decides whether the task was
+    clarified or replaced.
+
+    Args:
+        text: Full ledger contents.
+
+    Returns:
+        Short fingerprint, or empty when there is no ``## Task`` block.
+    """
+    match = _TASK_BLOCK_RE.search(text)
+    if match is None:
+        return ""
+    body = " ".join(match.group(1).split())
+    if not body:
+        return ""
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:_TASK_FINGERPRINT_CHARS]
+
+
+def task_drift(ledger: Path, text: str) -> str:
+    """Compare the task fingerprint with the one recorded at run start.
+
+    Args:
+        ledger: Ledger file.
+        text: Full ledger contents.
+
+    Returns:
+        Warning text when the task changed, else empty. Records the fingerprint on
+        first sight, so the baseline is the first version ever read.
+    """
+    current = task_fingerprint(text)
+    if not current:
+        return ""
+    state = read_sidecar(ledger)
+    recorded = state.get("task_fingerprint")
+    if recorded is None:
+        # The sidecar is shared with the phase machine, which fails closed when
+        # `phase` is missing. Recording a fingerprint must not make the gate
+        # unreadable, so the default phase is written at the same time.
+        state.setdefault("phase", 1)
+        state.setdefault("status", "RUNNING")
+        state.setdefault("transitions", [])
+        state["task_fingerprint"] = current
+        write_sidecar(ledger, state)
+        return ""
+    if recorded != current:
+        return (
+            "the `## Task` block no longer matches the text this run started with. "
+            "Refinements belong in `## Clarifications`; if the task itself changed, say so "
+            "in the report — a correct fix for a different bug is not a fix."
+        )
+    return ""
+
+
+def scan_records(text: str) -> list[str]:
+    """Scan every ``### F<n>`` block for secrets.
+
+    Records are where logs and command output end up, so they are where a leaked
+    value is most likely to sit — and the place the gate can actually see.
+
+    Args:
+        text: Full ledger contents.
+
+    Returns:
+        Refusal messages, one per secret found. Empty when clean.
+    """
+    problems: list[str] = []
+    for record in parse_records(text):
+        for finding in secrets.blocking(secrets.scan(record.body)):
+            problems.append(
+                f"secret in `{record.id}` at {secrets.describe(finding)}. Remove the value: "
+                "log its length, type or hash instead, and never the value itself."
+            )
+    return problems
+
+
+def read_sidecar(ledger: Path) -> dict[str, Any]:
+    """Read the sidecar, treating a missing file as empty state.
+
+    Args:
+        ledger: Ledger file.
+
+    Returns:
+        Parsed mapping, or an empty dict.
+
+    Raises:
+        SystemExit: When the sidecar exists but is unreadable — the gate must not
+            guess, and overwriting it would hide the damage.
+    """
+    path = _state_path(ledger)
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        _fail_closed(f"cannot read bug-fixer state {path}: {exc}")
+    if not isinstance(payload, dict):
+        _fail_closed(f"bug-fixer state {path} is not a JSON object")
+    return payload
+
+
+def write_sidecar(ledger: Path, state: dict[str, Any]) -> None:
+    """Write the sidecar, preserving fields this module does not own.
+
+    Args:
+        ledger: Ledger file.
+        state: Full state mapping to persist.
+    """
+    _state_path(ledger).write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+
+def terminal_status_problems(text: str, status: str) -> list[str]:
+    """Validate the fields a terminal status must carry with it.
+
+    The status is written *together with* its evidence — a decision nobody can audit is
+    not a decision (invariants 19, 28, 29). Each refusal names the missing field, because
+    "do not edit code" tells the agent the run is over but not that it forgot something.
+
+    Args:
+        text: Full ledger contents.
+        status: Status read from the ledger.
+
+    Returns:
+        Refusals, in the order the agent should fix them. Empty when the status is complete.
+    """
+    problems: list[str] = []
+
+    if _REPORT_RE.search(text) is None:
+        problems.append(
+            f"`STATUS: {status}` without `## Report`. The status and the report are written "
+            "by the same step: Итог, корневая причина, что изменено, таблица результатов, "
+            "остаток, что нужно от оператора, уроки."
+        )
+
+    if status == "PARTIAL":
+        heading = _REMAINING_RE.search(text)
+        if heading is None:
+            problems.append(
+                "`STATUS: PARTIAL` without `## Remaining`. A partial run hands over a list: "
+                "what is left, why it is not done, how it is verified, and who closes it."
+            )
+        else:
+            tail = text[heading.end() :]
+            next_heading = re.search(r"^##[ \t]", tail, re.MULTILINE)
+            section = tail[: next_heading.start()] if next_heading else tail
+            if _REMAINING_ITEM_RE.search(section) is None:
+                problems.append(
+                    "`## Remaining` exists but lists nothing. An empty remainder means the work "
+                    "is DONE; add at least one item or change the status."
+                )
+
+    if status == "BLOCKED":
+        reason = _BLOCKED_REASON_RE.search(text)
+        if reason is None:
+            problems.append(
+                "`STATUS: BLOCKED` without `Причина:`. Name one of: "
+                + ", ".join(BLOCKED_REASONS)
+                + "."
+            )
+        elif reason.group(1).strip().strip("`") not in BLOCKED_REASONS:
+            problems.append(
+                f"`Причина: {reason.group(1).strip()}` is not one of the listed reasons: "
+                + ", ".join(BLOCKED_REASONS)
+                + "."
+            )
+        if _LOGS_RE.search(text) is None:
+            problems.append(
+                "`STATUS: BLOCKED` without `Логи:`. Give the raw-data directory or the key "
+                "lines, otherwise the operator has nothing to act on."
+            )
+
+    return problems
+
+
+def legacy_ledger(text: str) -> bool:
+    """Whether this ledger was started under bug-fixer 2.x.
+
+    Three signals together, and all three are needed:
+
+    * a ``## Iteration N`` heading — 2.x wrote it as the pass marker;
+    * at least one ``### F<n>`` block — so a fresh 3.0 ledger, which has the
+      heading but no records yet, is not mistaken for a stale one;
+    * **no** ``| Kind |`` field and no ``### H<n>`` — 3.0's records always carry a
+      kind, and hypotheses are its whole structure.
+
+    The spec's own rule (``## Iteration N`` and no ``### H<n>``) is not enough on
+    its own: phase 1 of a legitimate 3.0 run writes exactly that heading before any
+    hypothesis exists, so the naive version refuses every new run at its first step.
+
+    Treating an old ledger as a fresh phase 1 would revive finished work under rules
+    it never knew, and each refusal would look like a bug in the gate.
+
+    Args:
+        text: Full ledger contents.
+
+    Returns:
+        ``True`` when the ledger carries the 2.x signature.
+    """
+    if _LEGACY_ITERATION_RE.search(text) is None:
+        return False
+    if count_hypotheses(text) > 0:
+        return False
+    if not _LEGACY_FINDING_RE.search(text):
+        return False
+    return re.search(r"^\|\s*Kind\s*\|", text, re.MULTILINE) is None
 
 
 def _state_path(ledger: Path) -> Path:
@@ -401,7 +1203,7 @@ def read_phase(ledger: Path) -> int:
         ledger: Ledger file.
 
     Returns:
-        Phase number (1, 2, or 3).
+        Phase number (1 to 5); ``PHASE 0`` is outside the automaton by design.
 
     Raises:
         SystemExit: When the sidecar exists but is unreadable or invalid — the
@@ -415,7 +1217,7 @@ def read_phase(ledger: Path) -> int:
     except (OSError, json.JSONDecodeError) as exc:
         _fail_closed(f"cannot read bug-fixer state {path}: {exc}")
     phase = payload.get("phase") if isinstance(payload, dict) else None
-    if phase not in (1, 2, 3):
+    if phase not in (1, 2, 3, 4, 5):
         _fail_closed(f"bug-fixer state {path} has invalid phase {phase!r}")
     return int(phase)
 
@@ -478,6 +1280,15 @@ def decide(
     if ledger is None:
         return _allow("no bug-fixer ledger found; gate inactive")
 
+    text = ledger.read_text(encoding="utf-8", errors="replace")
+    if legacy_ledger(text):
+        return _deny(
+            "this ledger was started under bug-fixer 2.1 (it has `## Iteration N` and no "
+            "`### H<n>` hypotheses). Finish it under 2.1, or start a new ledger for this bug: "
+            "its history has no hypotheses, so the 3.0 guards would refuse every transition "
+            "and the refusals would look like a broken gate."
+        )
+
     try:
         is_write, detail = _is_write_attempt(tool, args)
     except UnknownToolError as exc:
@@ -497,34 +1308,101 @@ def decide(
     if not is_write:
         return Verdict(allow=True)
 
-    text = ledger.read_text(encoding="utf-8", errors="replace")
-    iterations = count_iterations(text)
     status = read_status(text)
 
-    if status == "DONE":
+    if status == "UNREADABLE":
         return _deny(
-            "This bug is already marked STATUS: DONE. Do not edit code. Start a new ledger "
-            "for a new bug, or ask the user."
+            "the ledger's `STATUS:` line is not one of RUNNING, DONE, PARTIAL, "
+            "LIMIT_REACHED, BLOCKED. An unreadable status is not read as RUNNING."
+        )
+
+    # Invariants 19/28/29: a terminal status is written together with its evidence. The
+    # field check runs *before* the status block so the refusal can name what is missing —
+    # an agent told only "the run is over" cannot tell a forgotten field from a broken gate.
+    if status in {"DONE", "PARTIAL", "LIMIT_REACHED", "BLOCKED"}:
+        field_problems = terminal_status_problems(text, status)
+        if field_problems:
+            return _deny(
+                field_problems[0] + " The run is over either way, so this is written down "
+                "rather than fixed by editing code."
+            )
+
+    if status in {"DONE", "PARTIAL"}:
+        return _deny(
+            f"This bug is already marked STATUS: {status}. A partial run is finished, not "
+            "paused: the remainder is listed for the next task, so editing code here would "
+            "finish a run nobody is tracking. Start a new ledger."
+        )
+    if status == "LIMIT_REACHED":
+        return _deny(
+            f"This bug is marked STATUS: LIMIT_REACHED — the attempt cap ({MAX_ATTEMPTS}) is "
+            "spent. Do not edit code: report, list every refuted hypothesis, and ask the user for "
+            "artefacts."
         )
     if status == "BLOCKED":
         return _deny(
             "This bug is marked STATUS: BLOCKED. Do not edit code. Ask the user for the "
             "artefacts you listed and start a new run when they arrive."
         )
-    if iterations >= MAX_ITERATIONS:
+
+    # Invariant 3: at ``A = 10`` the only correct next action is ``LIMIT_REACHED``. This is
+    # checked before the phase-4 marker rules, because a refused cap is not an instruction
+    # about markers — telling the agent to add `Working on:` when the run is over is the
+    # wrong next step.
+    try:
+        attempts = count_attempts(text)
+    except CounterResetError as exc:
+        return _deny(str(exc))
+    if attempts >= MAX_ATTEMPTS:
         return _deny(
-            f"Iteration cap reached ({iterations} of {MAX_ITERATIONS}). Do not make another "
-            "change. Write STATUS: BLOCKED in the ledger, list every refuted hypothesis, and "
-            "ask the user for artefacts."
+            f"Attempt cap reached ({attempts} of {MAX_ATTEMPTS}). Write "
+            "`STATUS: LIMIT_REACHED` with `## Report` instead of another change."
         )
 
     phase = read_phase(ledger)
-    if phase == 1 and phase_gate_enabled(text) and _is_code_write(detail, ledger, tool):
+    if phase != 4 and phase_gate_enabled(text) and _is_code_write(detail, ledger, tool):
         return _deny(
-            "Phase 1 forbids production-code changes. Write the failing test, the e2e test "
-            "and the baseline first; move to Phase 2 with `bugfixer state <ledger> phase 2` "
-            "once the root cause is confirmed."
+            f"Phase {phase} forbids production-code changes: only Phase 4 (probe) may edit "
+            "code, and only as a probe of a named hypothesis. Phases 1-3 collect evidence; "
+            "Phase 5 judges it. Run `bugfixer_gate_state.py <ledger> advance 4 --edge "
+            "FIRST_GUESS --evidence \"H0 created\"` (or HYPOTHESIS_READY) once the "
+            "preconditions are written."
         )
+
+    if phase == 4 and phase_gate_enabled(text) and _is_code_write(detail, ledger, tool):
+        try:
+            active = active_hypothesis(text)
+        except AmbiguousMarkerError as exc:
+            return _deny(str(exc))
+        if not active:
+            return _deny(
+                "Phase 4 edits must be a probe of a named hypothesis: add a line "
+                "`Working on: H<n>` pointing at an existing `### H<n>` block before touching "
+                "production code."
+            )
+        if active not in parse_hypotheses(text):
+            return _deny(
+                f"`Working on: {active}` points at a hypothesis that does not exist. Name one "
+                "that does, so the edit is attributable."
+            )
+
+    if table_form_attempt(text):
+        return _deny(
+            "The ledger writes `Attempt`/`Recheck` as a table row. Markers are whole lines: "
+            "write `Attempt 3 consumed` and `Recheck H1 #2` on their own line. The gate reads "
+            "line starts, so a table cell is invisible and the transition never opens."
+        )
+
+    # Only the cap is checked here: numbering is validated on `advance`, because a
+    # hook runs on every tool call and parsing the whole ledger each time would
+    # slow each write for a rule that only matters when the phase changes.
+
+    for problem in scan_records(text):
+        return _deny(problem)
+
+    drift = task_drift(ledger, text)
+    if drift:
+        return _allow(drift)
 
     return Verdict(allow=True)
 

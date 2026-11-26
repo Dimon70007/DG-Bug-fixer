@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Phase state machine for a bug-fixer ledger (TASK-081 ST-2).
+"""Phase state machine for a bug-fixer ledger (TASK-081 ST-2, TASK-085 Ж-2).
 
 The ledger records findings; it cannot say which phase the run is in, and a hook
-cannot infer it. This CLI maintains the small sidecar the gate reads, and owns the
-*transitions* between phases:
+cannot infer it. This CLI owns the *transitions* between phases and appends each one to
+the run journal — the only place the phase is recorded (spec §5.4, invariant 34):
 
     bugfixer_gate_state.py <ledger>                                   # print state
     bugfixer_gate_state.py <ledger> advance 2 --evidence "BASELINE: 1652/1654"
@@ -33,12 +33,12 @@ import json
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Final, NamedTuple
 
-STATE_SUFFIX: Final[str] = ".bugfixer.json"
+STATE_SUFFIX: Final[str] = ".bugfixer.jsonl"
+"""Kept for callers that build the path themselves; the format lives in the journal module."""
 VALID_PHASES: Final[tuple[int, ...]] = (1, 2, 3, 4, 5)
 VALID_STATUSES: Final[tuple[str, ...]] = (
     "RUNNING",
@@ -144,6 +144,9 @@ def _load_gate() -> ModuleType:
 ledger_readers: Final[ModuleType] = _load_gate()
 """Shared readers: attempts, hypotheses, records, the active hypothesis."""
 
+#: The journal owns the record format, so the CLI and the gate cannot disagree about it.
+_journal = ledger_readers.journal
+
 
 class Refusal(NamedTuple):
     """A refused transition, with the reason the agent needs to act on."""
@@ -151,20 +154,8 @@ class Refusal(NamedTuple):
     reason: str
 
 
-def state_path(ledger: Path) -> Path:
-    """Return the sidecar path for a ledger.
-
-    Args:
-        ledger: Ledger file.
-
-    Returns:
-        Sidecar path next to the ledger.
-    """
-    return ledger.with_name(ledger.name + STATE_SUFFIX)
-
-
 def load(ledger: Path) -> dict[str, Any]:
-    """Load the sidecar, defaulting to Phase 1 when absent.
+    """Load the run state from the journal's last records.
 
     Args:
         ledger: Ledger file.
@@ -173,33 +164,13 @@ def load(ledger: Path) -> dict[str, Any]:
         State mapping with ``phase``, ``status``, and ``transitions``.
 
     Raises:
-        SystemExit: If the sidecar exists but is not a JSON object.
+        SystemExit: If the journal exists but a record cannot be read.
     """
-    path = state_path(ledger)
-    if not path.is_file():
-        return {"phase": 1, "status": "RUNNING", "transitions": []}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"bugfixer-state: cannot read {path}: {exc}", file=sys.stderr)
+        return _journal.state_of(ledger)
+    except _journal.JournalError as exc:
+        print(f"bugfixer-state: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
-    if not isinstance(payload, dict):
-        print(f"bugfixer-state: {path} is not a JSON object", file=sys.stderr)
-        raise SystemExit(2)
-    payload.setdefault("transitions", [])
-    return payload
-
-
-def save(ledger: Path, state: dict[str, Any]) -> None:
-    """Write the sidecar.
-
-    Args:
-        ledger: Ledger file.
-        state: State mapping to persist.
-    """
-    state = dict(state)
-    state["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    state_path(ledger).write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
 
 def count_markers(pattern: re.Pattern[str], ledger_text: str) -> int:
@@ -875,7 +846,7 @@ def advance(
     if not evidence.strip():
         return None, Refusal(
             f"transition {chosen.name} needs --evidence: one line saying what justified "
-            "the move, stored in the sidecar history."
+            "the move, stored in the journal."
         )
 
     ledger_text = ledger.read_text(encoding="utf-8", errors="replace")
@@ -885,17 +856,15 @@ def advance(
     if refusal is not None:
         return None, refusal
 
-    entry: dict[str, Any] = {
-        "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "edge": chosen.name,
-        "from": current,
-        "to": target,
-        "evidence": evidence.strip(),
-    }
-    updated = dict(state)
-    updated["phase"] = target
-    updated["transitions"] = [*(state.get("transitions") or []), entry]
-    save(ledger, updated)
+    # Invariant 32: one record per event, appended. The reason goes into ``why`` so a
+    # reader of the journal sees the same justification the agent wrote.
+    _journal.append_event(
+        ledger,
+        event="advance",
+        why=evidence.strip(),
+        **{"from": current, "to": target, "edge": chosen.name},
+    )
+    updated = load(ledger)
     return updated, None
 
 
@@ -919,7 +888,7 @@ def _require_ledger(raw: str) -> Path:
 
 
 def _set_status(ledger: Path, raw: str) -> int:
-    """Record a run status in the sidecar.
+    """Record a run status in the journal.
 
     Args:
         ledger: Ledger file.
@@ -932,10 +901,10 @@ def _set_status(ledger: Path, raw: str) -> int:
     if status not in VALID_STATUSES:
         print(f"bugfixer-state: status must be one of {VALID_STATUSES}", file=sys.stderr)
         return 2
-    state = load(ledger)
-    state["status"] = status
-    save(ledger, state)
-    print(json.dumps(state, indent=2))
+    _journal.append_event(
+        ledger, event="status", why="status recorded by the state CLI", status=status
+    )
+    print(json.dumps(load(ledger), indent=2))
     return 0
 
 

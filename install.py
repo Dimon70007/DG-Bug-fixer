@@ -98,10 +98,18 @@ _ALL_TARGETS: Final[tuple[str, ...]] = (*_PROJECT_TARGETS, *_HOME_TARGETS, _HOME
 #: history into the installed skill.
 _EXCLUDED_DIRS: Final[frozenset[str]] = frozenset({".git", "__pycache__", ".pytest_cache"})
 
-#: Installer-side files: tools for getting the skill onto a machine, not part of the
-#: skill the agent reads. Copying them is how an installed skill ends up with its own
-#: redundant installer, and a second copy of install.py would then copy a third.
-_EXCLUDED_FILES: Final[frozenset[str]] = frozenset({"install.py", "install.sh"})
+#: Installer-side and developer-side files: tools for getting the skill onto a machine and
+#: for testing it there, not part of the skill the agent reads. Copying them is how an
+#: installed skill ends up with its own redundant installer, and a second copy of install.py
+#: would then copy a third. ``tests`` and ``pyproject.toml`` belong to the plugin's own
+#: development (TASK-085 stage 1 moved the suite in): shipping the suite into a project
+#: puts dead weight in the agent's tree and a second copy to keep in step.
+_EXCLUDED_FILES: Final[frozenset[str]] = frozenset(
+    {"install.py", "install.sh", "pyproject.toml", "conftest.py"}
+)
+
+#: Directories never copied: caches, VCS metadata, and the plugin's own test suite.
+_EXCLUDED_TOP_DIRS: Final[frozenset[str]] = frozenset({"tests"})
 
 
 @dataclass(frozen=True)
@@ -298,6 +306,8 @@ def _iter_source_files(source: Path) -> list[Path]:
             continue
         relative = path.relative_to(source)
         if _EXCLUDED_DIRS.intersection(relative.parts):
+            continue
+        if relative.parts[0] in _EXCLUDED_TOP_DIRS:
             continue
         if relative.name in _EXCLUDED_FILES and relative.parent == Path("."):
             continue

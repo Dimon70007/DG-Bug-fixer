@@ -34,14 +34,12 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+import bugfixer_journal as journal
 import bugfixer_secrets as secrets
 
 #: Exit codes shared with every adapter.
 EXIT_ALLOW: Final[int] = 0
 EXIT_DENY: Final[int] = 2
-
-#: Sidecar suffix, next to the ledger.
-STATE_SUFFIX: Final[str] = ".bugfixer.json"
 
 #: Probes that reached a code change (``Attempt <k> consumed``).
 MAX_ATTEMPTS: Final[int] = 10
@@ -113,14 +111,28 @@ _BLOCKED_REASON_RE: Final[re.Pattern[str]] = re.compile(
 #: ``Логи: <path or lines>`` — the other half of `BLOCKED`.
 _LOGS_RE: Final[re.Pattern[str]] = re.compile(_PREFIX + r"Логи:[ \t]*(\S[^\n]*)", re.MULTILINE)
 
-#: The ``## Report`` section (invariant 19).
-_REPORT_RE: Final[re.Pattern[str]] = re.compile(r"^##[ \t]+Report[ \t]*$", re.MULTILINE)
+#: The ``## Report`` section (invariant 19). The spec's marker table writes it as
+#: ``## Report (поля §7)``, so a parenthetical suffix is allowed: the heading name is what
+#: matters, and an agent transcribing the table must not be refused for the annotation.
+_REPORT_RE: Final[re.Pattern[str]] = re.compile(r"^##[ \t]+Report(?:[ \t]*\([^)]*\))?[ \t]*$", re.MULTILINE)
 
-#: The ``## Remaining`` section (invariant 28).
-_REMAINING_RE: Final[re.Pattern[str]] = re.compile(r"^##[ \t]+Remaining[ \t]*$", re.MULTILINE)
+#: The ``## Remaining`` section (invariant 28). The spec's marker table writes it as
+#: ``## Remaining: <список>``, where ``<список>`` is the placeholder for the handover list;
+#: a heading carrying that placeholder, or a parenthetical, is still the section.
+_REMAINING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^##[ \t]+Remaining(?:[ \t]*:[^\n]*|[ \t]*\([^)]*\))?[ \t]*$", re.MULTILINE
+)
 
-#: A bullet under ``## Remaining``: a heading alone is not a handover.
-_REMAINING_ITEM_RE: Final[re.Pattern[str]] = re.compile(r"^[ \t]*[-*][ \t]+\S", re.MULTILINE)
+#: One item under ``## Remaining``: a bullet, a numbered item, or a table row. §9 asks each
+#: item to state what is left, why, how it is verified and who closes it — a shape that a
+#: table carries as well as a list, and this repository's own PARTIAL ledger uses a table.
+_REMAINING_ITEM_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*(?:[-*+][ \t]+\S|\d+[.)][ \t]+\S|\|[^|\n]+\|)", re.MULTILINE
+)
+
+#: A table header rule (``|---|---|``) is structure, not an item: it must not satisfy the
+#: "the remainder lists something" check on its own.
+_REMAINING_TABLE_RULE_RE: Final[re.Pattern[str]] = re.compile(r"^[ \t]*\|[\s:|-]+\|[ \t]*$")
 
 #: The task block: everything from ``## Task`` to the next level-2 heading.
 _TASK_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
@@ -152,6 +164,18 @@ _WRITE_COMMAND_RE: Final[re.Pattern[str]] = re.compile(
     r"dd\s+of=|chmod|chown|ln\s+-s|git\s+(?:apply|checkout|restore|reset|stash|commit)"
     r")\b"
     r"|>>?\s*[^&|\s]"
+)
+
+#: The destination of a shell redirection, as a path.
+_REDIRECT_TARGET_RE: Final[re.Pattern[str]] = re.compile(r">>?[ \t]*([^&|\s;]+)")
+
+#: The arguments of a shell command that writes to named paths. The path is what the
+#: phase ban is about, and taking it from the command is how a write to the ledger can be
+#: told from a write to production code in the same line.
+_WRITE_TARGET_COMMANDS_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:^|[;&|]\s*)(?:rm|mv|cp|install|tee|touch|mkdir|rmdir|truncate|sed\s+-i|perl\s+-i|"
+    r"dd|chmod|chown|ln\s+-s|git\s+(?:apply|checkout|restore|reset|stash|commit))\b"
+    r"([^\n;&|]*)"
 )
 
 #: Harness tool names that write files, lowercased per harness.
@@ -1131,23 +1155,21 @@ def task_drift(ledger: Path, text: str) -> str:
         text: Full ledger contents.
 
     Returns:
-        Warning text when the task changed, else empty. Records the fingerprint on
-        first sight, so the baseline is the first version ever read.
+        Warning text when the task changed, else empty. The first sight of a task is
+        recorded as a ``start`` record in the journal, so the baseline is the first
+        version ever read and there is no second state file to keep in step.
     """
     current = task_fingerprint(text)
     if not current:
         return ""
-    state = read_sidecar(ledger)
-    recorded = state.get("task_fingerprint")
+    recorded = _recorded_fingerprint(ledger)
     if recorded is None:
-        # The sidecar is shared with the phase machine, which fails closed when
-        # `phase` is missing. Recording a fingerprint must not make the gate
-        # unreadable, so the default phase is written at the same time.
-        state.setdefault("phase", 1)
-        state.setdefault("status", "RUNNING")
-        state.setdefault("transitions", [])
-        state["task_fingerprint"] = current
-        write_sidecar(ledger, state)
+        journal.append_event(
+            ledger,
+            event="start",
+            why="first sight of the task; its text is the baseline for drift",
+            task_fingerprint=current,
+        )
         return ""
     if recorded != current:
         return (
@@ -1156,6 +1178,25 @@ def task_drift(ledger: Path, text: str) -> str:
             "in the report — a correct fix for a different bug is not a fix."
         )
     return ""
+
+
+def _recorded_fingerprint(ledger: Path) -> str | None:
+    """The task fingerprint the run started with, if one was recorded.
+
+    Args:
+        ledger: Ledger file.
+
+    Returns:
+        Fingerprint string, or ``None`` when the journal holds no ``start`` record.
+    """
+    try:
+        events = journal.read_events(ledger)
+    except journal.JournalError as exc:
+        _fail_closed(str(exc))
+    for record in events:
+        if record.get("event") == "start" and record.get("task_fingerprint"):
+            return str(record["task_fingerprint"])
+    return None
 
 
 def scan_records(text: str) -> list[str]:
@@ -1180,39 +1221,26 @@ def scan_records(text: str) -> list[str]:
     return problems
 
 
-def read_sidecar(ledger: Path) -> dict[str, Any]:
-    """Read the sidecar, treating a missing file as empty state.
+def run_state(ledger: Path) -> dict[str, Any]:
+    """Derive the run state from the journal.
+
+    There is no sidecar any more (invariant 34): the journal's last matching record is the
+    state, so the gate, the state CLI and the drift check cannot disagree.
 
     Args:
         ledger: Ledger file.
 
     Returns:
-        Parsed mapping, or an empty dict.
+        Mapping with ``phase``, ``status``, ``hypothesis`` and ``transitions``.
 
     Raises:
-        SystemExit: When the sidecar exists but is unreadable — the gate must not
-            guess, and overwriting it would hide the damage.
+        SystemExit: When the journal is unreadable — the gate must not guess a phase.
     """
-    path = _state_path(ledger)
-    if not path.is_file():
-        return {}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        _fail_closed(f"cannot read bug-fixer state {path}: {exc}")
-    if not isinstance(payload, dict):
-        _fail_closed(f"bug-fixer state {path} is not a JSON object")
-    return payload
-
-
-def write_sidecar(ledger: Path, state: dict[str, Any]) -> None:
-    """Write the sidecar, preserving fields this module does not own.
-
-    Args:
-        ledger: Ledger file.
-        state: Full state mapping to persist.
-    """
-    _state_path(ledger).write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        return journal.state_of(ledger)
+    except journal.JournalError as exc:
+        _fail_closed(str(exc))
+        raise  # unreachable; _fail_closed exits
 
 
 def terminal_status_problems(text: str, status: str) -> list[str]:
@@ -1249,10 +1277,18 @@ def terminal_status_problems(text: str, status: str) -> list[str]:
             tail = text[heading.end() :]
             next_heading = re.search(r"^##[ \t]", tail, re.MULTILINE)
             section = tail[: next_heading.start()] if next_heading else tail
-            if _REMAINING_ITEM_RE.search(section) is None:
+            # A table's header rule carries no content: count only real items, so a lone
+            # `|---|---|` does not pass for a handover.
+            items = [
+                line
+                for line in section.splitlines()
+                if _REMAINING_ITEM_RE.match(line) and not _REMAINING_TABLE_RULE_RE.match(line)
+            ]
+            if not items:
                 problems.append(
                     "`## Remaining` exists but lists nothing. An empty remainder means the work "
-                    "is DONE; add at least one item or change the status."
+                    "is DONE; add at least one item — a bullet, a numbered entry, or a table row "
+                    "stating what is left, why, how it is verified and who closes it."
                 )
 
     if status == "BLOCKED":
@@ -1311,53 +1347,32 @@ def legacy_ledger(text: str) -> bool:
     return re.search(r"^\|\s*Kind\s*\|", text, re.MULTILINE) is None
 
 
-def _state_path(ledger: Path) -> Path:
-    """Return the sidecar path for a ledger.
-
-    Args:
-        ledger: Ledger file.
-
-    Returns:
-        Sidecar path next to the ledger.
-    """
-    return ledger.with_name(ledger.name + STATE_SUFFIX)
-
-
 def read_phase(ledger: Path) -> int:
-    """Read the current phase from the sidecar.
+    """Read the current phase from the journal's last ``advance`` record.
 
     Args:
         ledger: Ledger file.
 
     Returns:
         Phase number (1 to 5); ``PHASE 0`` is outside the automaton by design.
+        A missing journal means the run has not started: phase 1, not a refusal
+        (invariant 36).
 
     Raises:
-        SystemExit: When the sidecar exists but is unreadable or invalid — the
-            gate must not guess a phase.
+        SystemExit: When the journal is unreadable or records an invalid phase — the
+            gate must not guess.
     """
-    path = _state_path(ledger)
-    if not path.is_file():
-        return 1
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        _fail_closed(f"cannot read bug-fixer state {path}: {exc}")
-    phase = payload.get("phase") if isinstance(payload, dict) else None
-    if phase not in (1, 2, 3, 4, 5):
-        _fail_closed(f"bug-fixer state {path} has invalid phase {phase!r}")
-    return int(phase)
+    return int(run_state(ledger)["phase"])
 
 
 def _test_paths(ledger: Path) -> list[str]:
     """Read the project's test path prefixes from its contract.
 
-    Two layouts exist and both must work:
-
-    * ``bug-fixer.project.md`` in the project root — what the skill's Step 0
-      creates for a new project;
-    * ``repo-contract.md`` beside the skill — the filled instance a repository
-      keeps in-tree (this repo uses it), which lives under ``skills/<id>/references``.
+    One place, one rule: ``bug-fixer.project.md`` in the project root, which is what the
+    skill's Step 0 creates. The plugin used to also look for a filled ``repo-contract.md``
+    under ``skills/<id>/references`` — the layout of the repository the plugin was written
+    in. In any other project that path means nothing, and in a clone of the plugin there is
+    no ``skills/`` above it at all.
 
     Args:
         ledger: Ledger file, used to walk up toward the project root.
@@ -1365,15 +1380,8 @@ def _test_paths(ledger: Path) -> list[str]:
     Returns:
         Path prefixes considered tests. Empty when no contract states them.
     """
-    roots = [ledger.parent, *ledger.parents]
-    candidates = [base / "bug-fixer.project.md" for base in roots]
-    candidates += [
-        root / "repo-contract.md"
-        for base in roots[:3]
-        for root in list((base / "skills").glob("*/references")) + [base]
-    ]
-
-    for contract in candidates:
+    for base in [ledger.parent, *ledger.parents]:
+        contract = base / "bug-fixer.project.md"
         if not contract.is_file():
             continue
         text = contract.read_text(encoding="utf-8", errors="replace")
@@ -1389,6 +1397,38 @@ def _test_paths(ledger: Path) -> list[str]:
 
 
 def decide(
+    *,
+    ledger: Path | None,
+    tool: str,
+    args: dict[str, Any],
+) -> Verdict:
+    """Decide whether a tool call is allowed, and record a refusal.
+
+    A refusal is part of the run's history (§5.4 lists ``deny`` among the events), so the
+    wrapper writes it down before returning. The record names the tool and carries the
+    reason, which is exactly what the journal is for: answering "why was I blocked here"
+    later without replaying the run.
+
+    Args:
+        ledger: Active ledger, or ``None`` when no bug-fixer run is under way.
+        tool: Lowercased tool name.
+        args: Tool arguments.
+
+    Returns:
+        The verdict for this call.
+    """
+    verdict = _decide(ledger=ledger, tool=tool, args=args)
+    if ledger is not None and not verdict.allow:
+        try:
+            journal.append_event(ledger, event="deny", why=verdict.reason, tool=tool)
+        except OSError:
+            # The journal is an observation, not a precondition (invariant 36): a full
+            # disk must not turn a documented refusal into a crash the agent cannot read.
+            pass
+    return verdict
+
+
+def _decide(
     *,
     ledger: Path | None,
     tool: str,
@@ -1434,6 +1474,17 @@ def decide(
 
     if not is_write:
         return Verdict(allow=True)
+
+    # Invariant 33: the journal is history, and history is written by the runtime. This
+    # check comes before every phase rule so the refusal names the real objection; told
+    # "phase 1 forbids this", the agent would wait for phase 4 and try again.
+    if _is_journal_write(detail, ledger, tool):
+        return _deny(
+            f"the run journal {journal.journal_path(ledger).name} is written by the gate, not "
+            "by the agent (spec §5.4, invariant 33). Every state change goes through the state "
+            "CLI, which appends one record: `bugfixer_gate_state.py <ledger> advance <phase> "
+            "--evidence <why>`. Findings belong in the task file, not in the journal."
+        )
 
     status = read_status(text)
 
@@ -1551,8 +1602,144 @@ def phase_gate_enabled(ledger_text: str) -> bool:
     return _PHASE_GATE_OFF_RE.search(ledger_text) is None
 
 
+def _addresses_ledger(detail: str, ledger: Path) -> bool:
+    """Whether a write target names the ledger itself.
+
+    Invariant 31 makes the task file writable in every phase: §5.3 puts ``### H<n>`` and
+    ``### F<n>`` there, and a gate that refuses them forbids the work. The check is by
+    resolved path, not by name — two ``TASK-999.md`` files in different directories are
+    different files, and matching on the name alone would open the ban on the wrong one.
+
+    Args:
+        detail: Path or command from the classified call.
+        ledger: Ledger being enforced.
+
+    Returns:
+        ``True`` when every write target the call names is the ledger.
+    """
+    raw = Path(detail).expanduser()
+    target = ledger.resolve()
+    if raw.is_absolute():
+        return raw.resolve() == target
+    # A relative path can be relative to the harness's cwd, the ledger's directory or
+    # any directory above it (``tasks/TASK-999.md`` from the project root). Every one
+    # of those bases names the same file when it resolves to it.
+    for base in (Path.cwd(), ledger.parent, *ledger.parents):
+        if (base / raw).resolve() == target:
+            return True
+    return False
+
+
+def _shell_write_targets(command: str) -> list[str]:
+    """Destinations a shell command writes to.
+
+    String search over the whole command cannot tell a write target from an argument,
+    and removing the ledger's spelling leaves a dangling ``>>`` that still looks like a
+    redirection. The targets are therefore read out: redirections, plus the arguments of
+    the commands in ``_WRITE_COMMAND_RE`` that take a path.
+
+    Args:
+        command: Shell command line.
+
+    Returns:
+        Candidate destination paths, in command order; empty when none is named.
+    """
+    targets = [match.group(1) for match in _REDIRECT_TARGET_RE.finditer(command)]
+    for match in _WRITE_TARGET_COMMANDS_RE.finditer(command):
+        for token in match.group(1).split():
+            if token.startswith("-"):
+                continue
+            targets.append(token[3:] if token.startswith("of=") else token)
+    return targets
+
+
+def _addresses_ledger(detail: str, ledger: Path) -> bool:
+    """Whether a write target names the ledger itself.
+
+    Invariant 31 makes the task file writable in every phase: §5.3 puts ``### H<n>`` and
+    ``### F<n>`` there, and a gate that refuses them forbids the work the skill exists to
+    do. The check is by resolved path, not by name — two ``TASK-999.md`` files in
+    different directories are different files, and a name match would open the ban on the
+    wrong one.
+
+    Args:
+        detail: Path or command from the classified call.
+        ledger: Ledger being enforced.
+
+    Returns:
+        ``True`` when the target is the ledger.
+    """
+    return _names_path(detail, ledger)
+
+
+def _names_path(detail: str, target: Path) -> bool:
+    """Whether a path or shell target names ``target``, resolved.
+
+    Args:
+        detail: Path or shell token.
+        target: File the caller is asking about.
+
+    Returns:
+        ``True`` when both name the same file.
+    """
+    raw = Path(detail).expanduser()
+    resolved = target.resolve()
+    if raw.is_absolute():
+        return raw.resolve() == resolved
+    # A relative path can be relative to the harness's cwd, the target's directory or a
+    # directory above it (``tasks/TASK-999.md`` from the project root). Every one of those
+    # bases names the same file when it resolves to it.
+    for base in (Path.cwd(), target.parent, *target.parents):
+        if (base / raw).resolve() == resolved:
+            return True
+    return False
+
+
+def _is_journal_write(detail: str, ledger: Path, tool: str) -> bool:
+    """Whether a call writes, truncates or removes the run journal.
+
+    Invariant 33: the journal belongs to the runtime. A shell command is judged on its
+    targets, so ``cat TASK-999.md.bugfixer.jsonl`` — a read — stays allowed while
+    ``rm`` or ``>>`` on the same file does not.
+
+    Args:
+        detail: Path or command from the classified call.
+        ledger: Ledger being enforced.
+        tool: Lowercased tool name.
+
+    Returns:
+        ``True`` when the call targets the journal.
+    """
+    journal_path = journal.journal_path(ledger)
+    if tool in _SHELL_TOOLS:
+        return any(_names_path(target, journal_path) for target in _shell_write_targets(detail))
+    return _names_path(detail, journal_path)
+
+
+def _require_test_paths(ledger: Path, tool: str) -> list[str]:
+    """Read the contract's test paths, failing closed when it names none.
+
+    Args:
+        ledger: Ledger being enforced.
+        tool: Lowercased tool name for the diagnostic.
+
+    Returns:
+        Path prefixes considered tests.
+    """
+    tests = _test_paths(ledger)
+    if not tests:
+        _fail_closed(
+            "no 'Test paths:' entry in bug-fixer.project.md, so this "
+            f"{tool} call cannot be shown to be a test edit"
+        )
+    return tests
+
+
 def _is_code_write(detail: str, ledger: Path, tool: str) -> bool:
     """Decide whether a write touches production code rather than tests.
+
+    The ledger itself is never a production write (invariant 31); a shell command that
+    writes the ledger *and* something else is judged on the something else.
 
     Args:
         detail: Path or command from the classified call.
@@ -1560,26 +1747,32 @@ def _is_code_write(detail: str, ledger: Path, tool: str) -> bool:
         tool: Lowercased tool name for the diagnostic.
 
     Returns:
-        ``True`` when the write is outside the project's test paths.
+        ``True`` when the write is outside the project's test paths and the ledger.
     """
     if not detail:
         # A write with no identifiable target cannot be shown to be a test edit.
         return True
 
-    tests = _test_paths(ledger)
-    if not tests:
-        _fail_closed(
-            "no 'Test paths:' entry in bug-fixer.project.md, so this "
-            f"{tool} call cannot be shown to be a test edit"
-        )
-
     if tool not in _SHELL_TOOLS:
+        if _addresses_ledger(detail, ledger):
+            return False
+        tests = _require_test_paths(ledger, tool)
         normalized = detail.replace("\\", "/")
         return not any(normalized.startswith(prefix) or f"/{prefix}" in normalized for prefix in tests)
 
-    # A shell write may name several files; allow only when every write target
-    # looks like a test path.
-    if _WRITE_COMMAND_RE.search(detail) and not any(prefix in detail for prefix in tests):
+    targets = _shell_write_targets(detail)
+    if not targets:
+        # A write with no readable destination cannot be shown to be a test edit.
+        return True
+    if all(_addresses_ledger(target, ledger) for target in targets):
+        return False
+    tests = _require_test_paths(ledger, tool)
+    for target in targets:
+        normalized = target.replace("\\", "/")
+        if _addresses_ledger(target, ledger):
+            continue
+        if any(normalized.startswith(prefix) or f"/{prefix}" in normalized for prefix in tests):
+            continue
         return True
     return False
 

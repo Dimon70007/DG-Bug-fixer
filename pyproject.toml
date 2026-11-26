@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bug-fixer"
+version = "3.0.0"
+description = "Five-phase debugging skill: reproduce, route, research, probe one named hypothesis at a time, decide."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Dimon70007" }]
+# The skill itself is stdlib-only: a plugin that needs a wheel installed before it can run
+# is a plugin that fails on the first machine without network access.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "ruff>=0.6"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The plugin's tests import ``bugfixer_helpers`` from their own directory, the way pytest's
+# rootdir-insertion does; naming it explicitly keeps that true under any invocation.
+pythonpath = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]

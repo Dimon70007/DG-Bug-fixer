@@ -16,6 +16,11 @@
  * to the agent as "the guard is broken", which is the one failure mode that
  * must never be ambiguous.
  *
+ * DECLINED — no `session_start` / `sessionStart` hook: the gate enforces what happens
+ * during a run, and a session hook would inject a second copy of the skill's name and description
+ * into a context that already has them from the skill itself. A second copy is a second thing
+ * to keep in step, and nothing in the workflow depends on it.
+ *
  * KNOWN LIMITATION: OpenCode does not fire `tool.execute.before` for subagent
  * tool calls (anomalyco/opencode#5894). A subagent can therefore act despite a
  * deny here. This plugin enforces the loop for the primary agent only.

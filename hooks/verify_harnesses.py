@@ -29,17 +29,38 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-#: This file lives at <repo>/skills/bug-fixer/hooks/verify_harnesses.py.
-REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
-GATE: Final[Path] = REPO_ROOT / "skills" / "bug-fixer" / "hooks" / "bugfixer_gate.py"
+#: The gate lives beside this file. Derived from this file's own directory rather than by
+#: walking up to a "repository root": the plugin is installed and cloned in layouts that have
+#: no ``skills/<id>/`` above them, and a path built for one layout silently pointed at
+#: nothing everywhere else.
+GATE: Final[Path] = Path(__file__).resolve().with_name("bugfixer_gate.py")
 
-#: Harness id -> (binary on PATH, project config path this repo would use).
+#: The project whose harness configs to inspect: the git checkout this plugin sits in, or
+#: the plugin's own directory in a standalone clone. Outermost ``.git`` wins, matching the
+#: installer: inside a host project the plugin is a submodule with its own gitlink.
+def _project_root() -> Path:
+    """Find the checkout the harness configs belong to.
+
+    Returns:
+        Absolute path of the git checkout, or the plugin directory when there is none.
+    """
+    plugin_dir = Path(__file__).resolve().parent.parent
+    found = plugin_dir
+    for parent in plugin_dir.parents:
+        if (parent / ".git").exists():
+            found = parent
+    return found
+
+
+PROJECT_ROOT: Final[Path] = _project_root()
+
+#: Harness id -> (binary on PATH, project config path this plugin would use).
 HARNESSES: Final[dict[str, tuple[str, Path]]] = {
-    "cursor": ("cursor-agent", REPO_ROOT / ".cursor" / "hooks.json"),
-    "claude-code": ("claude", REPO_ROOT / ".claude" / "settings.json"),
-    "codex": ("codex", REPO_ROOT / ".codex" / "hooks.json"),
-    "opencode": ("opencode", REPO_ROOT / ".opencode" / "plugin" / "bugfixer-gate.ts"),
-    "openclaw": ("openclaw", REPO_ROOT / ".openclaw" / "plugins" / "bugfixer-gate.ts"),
+    "cursor": ("cursor-agent", PROJECT_ROOT / ".cursor" / "hooks.json"),
+    "claude-code": ("claude", PROJECT_ROOT / ".claude" / "settings.json"),
+    "codex": ("codex", PROJECT_ROOT / ".codex" / "hooks.json"),
+    "opencode": ("opencode", PROJECT_ROOT / ".opencode" / "plugin" / "bugfixer-gate.ts"),
+    "openclaw": ("openclaw", PROJECT_ROOT / ".openclaw" / "plugins" / "bugfixer-gate.ts"),
 }
 
 

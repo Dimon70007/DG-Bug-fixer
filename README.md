@@ -87,8 +87,7 @@ bug-fixer/
 ├── install.sh                    # argv forwarder for install.py
 ├── references/
 │   ├── workflow.md               # discriminators, results tables, anti-patterns
-│   ├── project-contract.md       # TEMPLATE: fill this for your project
-│   └── repo-contract.md          # filled example: linux_to_mac only
+│   └── project-contract.md       # TEMPLATE: fill this for your project
 ├── hooks/                        # optional enforcement gate + harness matrix
 │   ├── bugfixer_gate.py
 │   ├── bugfixer_gate_state.py
@@ -461,8 +460,8 @@ six experiments, `DONE`:
 | 3 | Fix: gate the branch on contiguity. `0/2`→`2/2`, sweep `1654/1654`, no new reds | `F10` |
 
 The experiment that did the work was the third one. Before it, two hypotheses predicted the
-same observation and neither could be killed. Full blocks:
-[`tasks/TASK-078`](../..) in the `linux_to_mac` repository.
+same observation and neither could be killed. The full blocks are in the task file of the
+project that ran this study; the plugin itself carries no project-specific history.
 
 ---
 
@@ -531,7 +530,8 @@ scan, and "no writes after a terminal status".
 ```
 hooks/
 ├── bugfixer_gate.py         # the decision (reads a harness payload on stdin)
-├── bugfixer_gate_state.py   # eight named edges + the phase sidecar
+├── bugfixer_gate_state.py   # eight named edges; appends the run journal
+├── bugfixer_journal.py      # the journal: append-only, runtime-written (spec §5.4)
 ├── bugfixer_secrets.py      # scanner; usable as --diff by the agent itself
 ├── cursor.hooks.json        # template -> .cursor/hooks.json
 ├── claude.settings.json     # template -> .claude/settings.json
@@ -576,19 +576,25 @@ otherwise would be false.
 | two `Working on:` lines, or `Attempt`/`Recheck` written as a table row | that write |
 | attempt numbering with a gap, `Recheck #6`, or an 11th hypothesis (checked on a transition) | the transition |
 | a secret in a `### F<n>` record | that write |
-| anything unreadable (corrupt sidecar, no `Test paths:`) | all, with the reason |
+| anything unreadable (corrupt journal record, no `Test paths:`) | all, with the reason |
 
 `A` is counted from the `Attempt <k> consumed` lines, after the last operator reset. A hook
 sees tool calls, not loops, so the ledger is the only honest source. The phase cannot be
-inferred at all, so it lives in a sidecar that only the state machine may move:
+inferred at all, so it is read from the run journal — one appended record per event, written
+by the state CLI and never by the agent (spec §5.4, invariants 32–36):
 
 ```bash
+python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md           # phase, status, hypothesis
 python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md edges     # the eight names
 python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md advance 2 --evidence "RED + baseline + 3Q"
 python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md advance 3 --edge DEEPEN_SAME --evidence "delta 7->2"
 python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md status BLOCKED
-python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md
 ```
+
+The journal is `tasks/TASK-123.md.bugfixer.jsonl`, beside the task file and outside git
+(`*.bugfixer.jsonl`). It is append-only: `advance` grows it by one line and rewrites nothing.
+A write to it through a tool is refused, naming the gate as its owner — there is no phase
+number for an agent to edit, which is what the old `.bugfixer.json` sidecar allowed.
 
 A phase pair with two meanings (`4→3`) **requires** `--edge`: the gate refuses to guess which
 one you meant, because they differ in verdict, proof and what happens next.

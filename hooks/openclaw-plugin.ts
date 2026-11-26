@@ -13,6 +13,11 @@
  * Install: register this plugin with OpenClaw. No ledger path is configured here:
  * the gate finds it from the project contract (``Task/bug file:``) in the tool
  * call's working directory, so the same file works in every project.
+ *
+ * DECLINED — no `session_start` / `sessionStart` hook: the gate enforces what happens
+ * during a run, and a session hook would inject a second copy of the skill's name and description
+ * into a context that already has them from the skill itself. A second copy is a second thing
+ * to keep in step, and nothing in the workflow depends on it.
  */
 
 import { spawn } from "node:child_process"

@@ -10,7 +10,9 @@
  * a `Bun` global is not available and a ReferenceError inside a gate reads to
  * the agent as "the guard is broken".
  *
- * Install: register this plugin with OpenClaw, then set the ledger path.
+ * Install: register this plugin with OpenClaw. No ledger path is configured here:
+ * the gate finds it from the project contract (``Task/bug file:``) in the tool
+ * call's working directory, so the same file works in every project.
  */
 
 import { spawn } from "node:child_process"
@@ -18,7 +20,6 @@ import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/p
 
 const PYTHON = "__PYTHON__"
 const GATE = "__GATE__"
-const LEDGER = "__LEDGER__"
 
 interface BlockDecision {
   block: boolean
@@ -30,10 +31,15 @@ interface BlockDecision {
  *
  * @param toolName - OpenClaw tool name, e.g. "exec", "write".
  * @param params - Tool parameters as resolved by OpenClaw.
+ * @param cwd - Project directory; the gate searches it for the contract and ledger.
  * @returns The block decision and the reason to hand back to the agent.
  */
-function askGate(toolName: string, params: Record<string, unknown>): Promise<BlockDecision> {
-  const payload = JSON.stringify({ tool_name: toolName, tool_input: params })
+function askGate(
+  toolName: string,
+  params: Record<string, unknown>,
+  cwd: string | undefined,
+): Promise<BlockDecision> {
+  const payload = JSON.stringify({ tool_name: toolName, tool_input: params, cwd })
 
   return new Promise<BlockDecision>((resolve) => {
     let stdout = ""
@@ -45,7 +51,7 @@ function askGate(toolName: string, params: Record<string, unknown>): Promise<Blo
       resolve(decision)
     }
 
-    const child = spawn(PYTHON, [GATE, "--ledger", LEDGER], {
+    const child = spawn(PYTHON, [GATE], {
       stdio: ["pipe", "pipe", "pipe"],
     })
 
@@ -95,8 +101,13 @@ export default definePluginEntry({
   register(api: OpenClawPluginApi) {
     api.on(
       "before_tool_call",
-      async (event: { toolName: string; params?: Record<string, unknown> }) =>
-        askGate(event.toolName, event.params ?? {}),
+      async (event: {
+        toolName: string
+        params?: Record<string, unknown>
+        cwd?: string
+        workdir?: string
+      }) =>
+        askGate(event.toolName, event.params ?? {}, event.cwd ?? event.workdir),
       // Matcher narrows the hook to tools that can mutate the filesystem. A
       // gate that fires on every read adds latency for no benefit.
       { matcher: ["exec", "write", "edit", "apply_patch"], priority: 50 },

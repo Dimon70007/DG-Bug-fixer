@@ -3,7 +3,7 @@
   "hooks": {
     "preToolUse": [
       {
-        "command": "\"__PYTHON__\" \"__GATE__\" --ledger \"__LEDGER__\"",
+        "command": "\"$CURSOR_PROJECT_DIR/.cursor/skills/bug-fixer/hooks/run-gate.sh\"",
         "timeout": 10,
         "failClosed": true
       }

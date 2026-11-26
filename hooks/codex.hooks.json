@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"__PYTHON__\" \"__GATE__\" --ledger \"__LEDGER__\"",
+            "command": "sh \"$(git rev-parse --show-toplevel)/.agents/skills/bug-fixer/hooks/run-gate.sh\"",
             "timeout": 10
           }
         ]

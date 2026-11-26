@@ -80,6 +80,8 @@ two filled examples.
 ```
 bug-fixer/
 ├── SKILL.md                      # the skill: phases, edges, counters, prohibitions
+├── .cursor-plugin/
+│   └── plugin.json               # Cursor plugin manifest (skill root = the skill)
 ├── LICENSE                       # MIT
 ├── install.py                    # installer (not copied into targets)
 ├── install.sh                    # argv forwarder for install.py
@@ -91,6 +93,9 @@ bug-fixer/
 │   ├── bugfixer_gate.py
 │   ├── bugfixer_gate_state.py
 │   ├── bugfixer_secrets.py       # secret scanner for records and diffs
+│   ├── run-gate.sh               # portable preToolUse entry point (no absolute paths)
+│   ├── hooks-cursor.json         # Cursor-format hooks used by the plugin manifest
+│   ├── cursor.hooks.json         # template for a project-level hook, if you wire it by hand
 │   ├── verify_harnesses.py
 │   └── *.json, *.ts              # adapter templates per agent
 ├── runner/
@@ -130,18 +135,162 @@ The format is the same everywhere: a folder named `bug-fixer` containing `SKILL.
 Pick the destination, then restart the session (or start a new chat) so the skill metadata
 is re-read.
 
+**Two ways in, and they install different things.** Read this before choosing, because the
+difference is a working gate versus a skill with no enforcement.
+
+| Route | What you get | Hooks |
+|---|---|---|
+| **Plugin** (`/add-plugin`, or a local plugin folder) | skill + manifest, managed by Cursor | wired by the manifest — **IDE only**, see the warning below |
+| **Installer** (`./install.sh --target …`) | skill copied into a project or home directory | project `.cursor/hooks.json` written for you, works in **IDE and CLI** |
+
+### Route A — plugin
+
+Documented in Cursor's plugin reference: a plugin is a directory with a manifest and its
+components, and every Cursor plugin needs `.cursor-plugin/plugin.json`. This repository ships
+one at the skill root, so the skill directory *is* the plugin:
+
+```json
+{
+  "name": "bug-fixer",
+  "version": "3.0.0",
+  "hooks": "./hooks/hooks-cursor.json"
+}
+```
+
+- The root `SKILL.md` is the skill. There is deliberately **no** `skills` field: Cursor treats
+  `SKILL.md` at the plugin root as a single-skill plugin only while no `skills/` directory and no
+  manifest `skills` field exist. Adding one would hide the skill.
+- `hooks` points at a Cursor-format hook file (`version: 1`, camelCase events). The command is
+  relative (`./hooks/run-gate.sh`) because a plugin cannot embed an interpreter path that
+  differs per machine. Cursor runs plugin hooks from the plugin directory for every event except
+  `stop`.
+- Install it with `/add-plugin` from a marketplace, or drop the directory under
+  `~/.cursor/plugins/local/` for a local test.
+
+> **Plugin hooks do not run in the Cursor CLI.** This is a documented, still-open gap: the CLI
+> loads a plugin's skills and rules but ignores its hooks. If you use `cursor-agent`, add the
+> hook file route below as well — that path *is* honoured by the CLI.
+
+### Route B — installer (recommended: the only route where the gate is enforced everywhere)
+
 The skill carries its own installer, so a clone needs nothing else:
 
 ```bash
 git clone https://github.com/Dimon70007/DG-Bug-fixer.git ~/src/bug-fixer
 cd ~/src/bug-fixer
-./install.sh --target cursor            # into the git checkout this clone sits in
-./install.sh --target personal          # ~/.cursor/skills, every project
-./install.sh --target all --dry-run     # show the plan, write nothing
+./install.sh --target cursor                            # into the git checkout this clone sits in
+./install.sh --target cursor --project ~/work/my-repo   # into another project
+./install.sh --target home --home ~                     # ~/.cursor/skills; --home is mandatory
+./install.sh --target personal                          # ~/.cursor/skills, every project
+./install.sh --target all --dry-run                     # show the plan, write nothing
+./install.sh --target cursor --project ~/work/my-repo --uninstall
 ```
+
+**`--target home` versus `--target personal`.** Both install into a home directory, and the
+difference is that `home` **requires** `--home <path>`. `personal` defaults to `~`; `home` refuses
+to guess, because a machine with several users or a shared volume otherwise installs into a home
+nobody chose. Use `home` when the path should be stated explicitly, `personal` for the convenience
+default.
+
+**A home install writes no hook.** There is no project root to attach it to, so the skill arrives
+without enforcement and the installer says so. The gate is wired per project: either re-run the
+installer with `--target cursor --project <repo>`, or copy the hook entry by hand.
+
+**Removing it.** `--uninstall` removes the skill directory **and** this skill's entry from
+`.cursor/hooks.json`, `.claude/settings.json` and `.codex/hooks.json`, leaving every other hook
+untouched. This is not optional politeness: a leftover entry points at a deleted wrapper, and with
+`failClosed: true` that blocks every tool call in the project — the agent reports a broken guard
+rather than a missing skill.
+
+For a project-scope target the installer also writes `<project>/.cursor/hooks.json`:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "command": ".cursor/skills/bug-fixer/hooks/run-gate.sh",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ]
+  }
+}
+```
+
+Three details, each from Cursor's hooks documentation and each load-bearing:
+
+1. **Project hooks resolve from the project root**, so the path is
+   `.cursor/skills/…/run-gate.sh` — *not* `./hooks/…`, which Cursor would look for at
+   `/hooks/…`.
+2. **`failClosed: true`** turns a crash, timeout or empty output into a block instead of an
+   allow. Without it a broken hook silently stops protecting anything.
+3. **An existing `hooks.json` is merged, not replaced.** Other hooks in that project survive;
+   only this skill's own entry is refreshed, so re-running the installer is idempotent.
+
+A user-scope install (`--target personal`) writes no hook: there is no project root to attach
+it to, and creating `.cursor/hooks.json` in an unrelated directory would be a surprise.
 
 > The clone uses HTTPS so it works without an SSH key. Replace it with
 > `git@github.com:Dimon70007/DG-Bug-fixer.git` if you have a key set up.
+
+### What each harness gets
+
+One gate, one wrapper, five wirings. The difference between harnesses is the **config file
+shape**, never the logic — so a fix in `bugfixer_gate.py` reaches all of them at once.
+
+| Harness | Skill location | Hook config | How the wrapper path is resolved |
+|---|---|---|---|
+| Cursor | `.cursor/skills/` | `.cursor/hooks.json` → `preToolUse` | `$CURSOR_PROJECT_DIR` |
+| Claude Code | `.claude/skills/` | `.claude/settings.json` → `PreToolUse` | `${CLAUDE_PROJECT_DIR}` |
+| Codex | `.agents/skills/` | `.codex/hooks.json` → `PreToolUse` | `git rev-parse --show-toplevel` (Codex documents no project variable) |
+| OpenCode | `.opencode/skills/` | `.opencode/plugin/bugfixer-gate.ts` (in-process `tool.execute.before`) | plugin gets `cwd` from the tool call |
+| OpenClaw | `<workspace>/skills/` | OpenClaw plugin `before_tool_call` | plugin gets `cwd`/`workdir` from the event |
+
+No path is baked in at install time. That is deliberate: an absolute path is correct on
+exactly one machine, and the failure is silent — the hook points at a file that is not
+there, `failClosed` blocks every tool call, and the agent reports a broken guard.
+
+Two harness behaviours worth knowing before you rely on this:
+
+- **Codex has no project-directory variable** in hooks. Its own examples resolve the repo
+  root with `git rev-parse --show-toplevel`, so the template does the same. A project that
+  is not a git checkout has no working Codex hook — the installer says so rather than
+  writing a command that silently does nothing.
+- **OpenCode does not fire `tool.execute.before` for subagent calls** (`anomalyco/opencode#5894`),
+  so its plugin enforces the loop for the primary agent only. This is a harness limit, not a
+  configuration mistake.
+
+
+
+### Nothing is machine-specific
+
+The gate contains no absolute path. It finds the ledger in this order:
+
+1. `--ledger` from the adapter, when one is configured;
+2. a ledger path in the hook payload, when the harness sends one;
+3. **the project contract** — `Task/bug file: tasks/TASK-*.md` — resolved from the hook's working
+   directory, newest match wins.
+
+So the same installed tree works on any machine. If the pattern matches two files that cannot be
+ordered, or matches nothing, the gate stays inert rather than attaching the run to a guessed bug.
+
+### Verifying the install
+
+```bash
+python3 hooks/verify_harnesses.py
+```
+
+It runs the gate against a synthetic deny first, then reports one row per harness:
+`verified` / `not-wired` / `not-installed` / `not-automatable` / `found-outside-path`. A harness
+that is absent or needs an interactive sign-in is **not** reported as a pass — `verified denies:
+0 of 5` is the honest answer on a machine where nothing was reproduced, and it is the answer this
+repository reports.
+
+`found-outside-path` exists because a binary can be installed and still be invisible:
+`cursor-agent` lives in `~/.local/bin`, which is not on `PATH` by default on macOS. The verifier
+says so instead of calling the harness missing.
 
 The per-agent sections below give the destination each target means; the commands are the
 same `./install.sh --target …` in every case.

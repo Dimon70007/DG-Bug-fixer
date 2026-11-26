@@ -20,6 +20,7 @@ harnesses are not failures, and the script never claims a deny it did not see.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -88,24 +89,39 @@ def _gate_selftest(tmp: Path) -> tuple[bool, str]:
 def _classify(harness: str, binary: str, config: Path) -> Row:
     """Decide the matrix cell for one harness.
 
+    A binary outside ``PATH`` is reported as ``found-outside-path``, not as
+    ``not-installed``: the first version used ``shutil.which`` alone and called
+    ``cursor-agent`` missing while it sat in ``~/.local/bin``. "Absent" and "present
+    somewhere the shell cannot see" are different facts, and only one of them means
+    the harness is not installed.
+
     Args:
         harness: Harness id.
-        binary: Executable name to look for on PATH.
+        binary: Executable name to look for.
         config: Where this repo would place the hook config.
 
     Returns:
         A populated :class:`Row`.
     """
-    installed = shutil.which(binary) is not None
+    on_path = shutil.which(binary)
+    elsewhere = None if on_path else _find_outside_path(binary)
     wired = config.exists()
 
-    if not installed:
+    if on_path is None and elsewhere is None:
         return Row(
             harness,
             False,
             "absent" if not wired else "present",
             "not-installed",
-            f"{binary} not on PATH",
+            f"{binary} not on PATH and not in a known install directory",
+        )
+    if on_path is None:
+        return Row(
+            harness,
+            True,
+            "absent" if not wired else "present",
+            "found-outside-path",
+            f"{binary} at {elsewhere}; add its directory to PATH to run it",
         )
     if not wired:
         return Row(harness, True, "absent", "not-wired", "installed, no hook config in this repo")
@@ -116,6 +132,33 @@ def _classify(harness: str, binary: str, config: Path) -> Row:
         "not-automatable",
         "installed and wired; a deny needs an authenticated session",
     )
+
+
+#: Directories harnesses install themselves into, none of which is on ``PATH`` by
+#: default on macOS. Checked only after ``PATH`` misses, so a normal install is
+#: reported normally.
+_OFF_PATH_DIRS: Final[tuple[Path, ...]] = (
+    Path.home() / ".local" / "bin",
+    Path.home() / ".cursor" / "bin",
+    Path("/usr/local/bin"),
+    Path("/opt/homebrew/bin"),
+)
+
+
+def _find_outside_path(binary: str) -> Path | None:
+    """Look for an executable in the known install directories.
+
+    Args:
+        binary: Executable name.
+
+    Returns:
+        Path to the executable, or ``None``.
+    """
+    for directory in _OFF_PATH_DIRS:
+        candidate = directory / binary
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 
 def main() -> int:

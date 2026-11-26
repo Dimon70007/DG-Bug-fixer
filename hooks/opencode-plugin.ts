@@ -7,7 +7,9 @@
  * call.
  *
  * Install: copy to `.opencode/plugin/bugfixer-gate.ts` (project) or
- * `~/.config/opencode/plugins/bugfixer-gate.ts` (global), then set the ledger.
+ * `~/.config/opencode/plugins/bugfixer-gate.ts` (global). No ledger path is
+ * configured here: the gate finds it from the project contract (``Task/bug file:``)
+ * in the tool call's working directory, so the same file works in every project.
  *
  * Runtime: `node:child_process`, not `Bun.spawn`. The plugin host is not
  * guaranteed to expose a `Bun` global, and a ReferenceError inside a gate reads
@@ -24,7 +26,6 @@ import type { Plugin } from "@opencode-ai/plugin"
 
 const PYTHON = "__PYTHON__"
 const GATE = "__GATE__"
-const LEDGER = "__LEDGER__"
 
 interface GateResult {
   allow: boolean
@@ -39,10 +40,15 @@ interface GateResult {
  *
  * @param tool - OpenCode tool name, e.g. "write", "edit", "bash".
  * @param args - Tool arguments as OpenCode resolved them.
+ * @param cwd - Project directory; the gate searches it for the contract and ledger.
  * @returns The gate verdict and, on deny, the reason to show the agent.
  */
-function runGate(tool: string, args: Record<string, unknown>): Promise<GateResult> {
-  const payload = JSON.stringify({ tool_name: tool, tool_input: args })
+function runGate(
+  tool: string,
+  args: Record<string, unknown>,
+  cwd: string | undefined,
+): Promise<GateResult> {
+  const payload = JSON.stringify({ tool_name: tool, tool_input: args, cwd })
 
   return new Promise<GateResult>((resolve) => {
     let stdout = ""
@@ -54,7 +60,7 @@ function runGate(tool: string, args: Record<string, unknown>): Promise<GateResul
       resolve(result)
     }
 
-    const child = spawn(PYTHON, [GATE, "--ledger", LEDGER], {
+    const child = spawn(PYTHON, [GATE], {
       stdio: ["pipe", "pipe", "pipe"],
     })
 
@@ -102,7 +108,11 @@ function runGate(tool: string, args: Record<string, unknown>): Promise<GateResul
 export const BugFixerGate: Plugin = async () => {
   return {
     "tool.execute.before": async (input, output) => {
-      const verdict = await runGate(input.tool, output.args ?? {})
+      const cwd =
+        (typeof input.cwd === "string" && input.cwd) ||
+        (typeof input.directory === "string" && input.directory) ||
+        process.cwd()
+      const verdict = await runGate(input.tool, output.args ?? {}, cwd)
       if (!verdict.allow) throw new Error(verdict.reason)
     },
   }

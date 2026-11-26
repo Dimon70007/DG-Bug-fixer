@@ -498,12 +498,26 @@ def _is_write_attempt(tool: str, args: dict[str, Any]) -> tuple[bool, str]:
 def _resolve_ledger(event: dict[str, Any], explicit: str | None) -> Path | None:
     """Find the ledger this run writes to.
 
+    Three sources, in order, and the order is deliberate:
+
+    1. ``--ledger`` from the adapter — an explicit answer beats discovery.
+    2. A path in the hook payload (some harnesses pass one).
+    3. **The project contract or the working directory.** This is what makes a
+       portable install possible: a hook command cannot embed an absolute ledger
+       path, because the ledger does not exist when the skill is installed and its
+       location differs per project.
+
+    Step 3 reads ``Task/bug file:`` from the contract and takes the newest file
+    matching its pattern. Anything else — several candidates that are equally new,
+    a pattern that matches nothing — returns ``None``, because guessing which bug is
+    being fixed is worse than the gate staying inert.
+
     Args:
-        event: Harness event, which may carry a path.
+        event: Harness event, which may carry a path and a working directory.
         explicit: ``--ledger`` value from the adapter.
 
     Returns:
-        Path to an existing ledger, or ``None`` when no run is active.
+        Path to an existing ledger, or ``None`` when no run can be identified.
     """
     candidates: list[str] = []
     if explicit:
@@ -517,7 +531,120 @@ def _resolve_ledger(event: dict[str, Any], explicit: str | None) -> Path | None:
         path = Path(raw).expanduser()
         if path.is_file():
             return path
+
+    return discover_ledger(_project_root(event))
+
+
+def _project_root(event: dict[str, Any]) -> Path:
+    """Working directory the hook is called in, or the process directory.
+
+    Cursor documents ``cwd`` for some events and ``workspace_roots`` for all of
+    them, and reports ``cwd`` as an empty string for Shell calls in some versions.
+    The empty string is treated as absent rather than as the filesystem root.
+
+    Args:
+        event: Harness event.
+
+    Returns:
+        Directory to search for the contract and the ledger.
+    """
+    cwd = event.get("cwd")
+    if isinstance(cwd, str) and cwd.strip():
+        return Path(cwd).expanduser().resolve()
+    roots = event.get("workspace_roots")
+    if isinstance(roots, list):
+        for root in roots:
+            if isinstance(root, str) and root.strip():
+                return Path(root).expanduser().resolve()
+    return Path.cwd()
+
+
+#: How many directory levels up to look for the contract.
+_CONTRACT_SEARCH_DEPTH: Final[int] = 4
+
+
+def discover_ledger(root: Path) -> Path | None:
+    """Locate the ledger from the project contract, without an explicit path.
+
+    Args:
+        root: Directory to start from (usually the project root).
+
+    Returns:
+        The newest file matching the contract's ``Task/bug file:`` pattern, or
+        ``None`` when the contract is absent, names no usable pattern, or the match
+        is ambiguous.
+    """
+    contract = _find_contract(root)
+    if contract is None:
+        return None
+    pattern = _contract_ledger_pattern(contract)
+    if not pattern:
+        return None
+
+    matches: list[Path] = []
+    for base in (root, contract.parent):
+        matches.extend(sorted(base.glob(pattern)))
+    # The same file can be matched twice (root and the contract's directory coincide);
+    # dedupe by resolved path, or the mtime tie-break below would see a false tie.
+    files = sorted({match.resolve() for match in matches if match.is_file()})
+    if not files:
+        return None
+    newest = max(files, key=lambda match: match.stat().st_mtime)
+    # Two *different* files with the same mtime cannot be ordered; picking one would
+    # attach the run to the wrong bug.
+    tied = [match for match in files if match.stat().st_mtime == newest.stat().st_mtime]
+    if len(tied) > 1:
+        return None
+    return newest
+
+
+def _find_contract(root: Path) -> Path | None:
+    """Find ``bug-fixer.project.md`` at or above ``root``.
+
+    Args:
+        root: Directory to start from.
+
+    Returns:
+        Contract path, or ``None``.
+    """
+    current = root
+    for _ in range(_CONTRACT_SEARCH_DEPTH):
+        candidate = current / "bug-fixer.project.md"
+        if candidate.is_file():
+            return candidate
+        if current.parent == current:
+            break
+        current = current.parent
     return None
+
+
+def _contract_ledger_pattern(contract: Path) -> str:
+    """Read the ledger pattern from a contract.
+
+    Args:
+        contract: Contract file.
+
+    Returns:
+        A glob pattern, or empty when the field is missing or unreadable.
+    """
+    text = contract.read_text(encoding="utf-8", errors="replace")
+    match = re.search(
+        r"^[ \t>*-]*(?:Task/bug file|Ledger)[ \t]*:[ \t]*(.+)$", text, re.MULTILINE | re.IGNORECASE
+    )
+    if match is None:
+        return ""
+    raw = match.group(1).strip().strip("`").strip()
+    # The template documents alternatives as `a | b | c`; the first is the convention
+    # to try, and the rest are for projects that keep tasks elsewhere.
+    for option in raw.split("|"):
+        candidate = option.strip().strip("`").strip()
+        if candidate and any(char in candidate for char in "*?["):
+            return candidate
+    for option in raw.split("|"):
+        candidate = option.strip().strip("`").strip()
+        if candidate and candidate.endswith(".md"):
+            return candidate
+    return ""
 
 
 def read_status(ledger_text: str) -> str:
@@ -1496,7 +1623,14 @@ def main(argv: list[str] | None = None) -> int:
         prog="bugfixer_gate.py",
         description="Deny bug-fixer rule violations from an agent hook.",
     )
-    parser.add_argument("--ledger", default=None, help="ledger file; overrides the payload")
+    parser.add_argument(
+        "--ledger",
+        default=None,
+        help=(
+            "ledger file; omit to discover it from the project contract's "
+            "`Task/bug file:` pattern in the hook's working directory"
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:

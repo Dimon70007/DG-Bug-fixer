@@ -24,13 +24,14 @@ instead of guessing.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, NoReturn
+from typing import Any, Final, NoReturn
 
 #: This file lives in the skill directory, so the source is unambiguous.
 SKILL_DIR: Final[Path] = Path(__file__).resolve().parent
@@ -71,6 +72,12 @@ _PROJECT_TARGETS: Final[dict[str, Path]] = {
 
 _OPENCLAW_TARGET: Final[str] = "openclaw"
 
+#: Home-directory install that requires the path to be stated. ``personal`` defaults to
+#: ``~``; this target refuses to, so "which home directory" is always a decision made
+#: out loud — a machine with several users, or a shared volume, otherwise picks one
+#: silently.
+_HOME_EXPLICIT_TARGET: Final[str] = "home"
+
 #: User-level destinations (whole machine, every project). Verified against each
 #: tool's docs: Cursor reads ``~/.cursor/skills``, Codex and the tool-agnostic
 #: standard use ``~/.agents/skills``, Claude Code uses ``~/.claude/skills``, and
@@ -84,7 +91,7 @@ _HOME_TARGETS: Final[dict[str, Path]] = {
     "personal-openclaw": Path(".openclaw") / "skills",
 }
 
-_ALL_TARGETS: Final[tuple[str, ...]] = (*_PROJECT_TARGETS, *_HOME_TARGETS, _OPENCLAW_TARGET)
+_ALL_TARGETS: Final[tuple[str, ...]] = (*_PROJECT_TARGETS, *_HOME_TARGETS, _HOME_EXPLICIT_TARGET, _OPENCLAW_TARGET)
 
 #: Never copied into a destination: VCS metadata and bytecode caches are not skill
 #: content. ``.git`` matters most: a clone passed as the source must not ship its
@@ -105,11 +112,14 @@ class InstallPlan:
         target: Target id (``cursor``, ``codex``, ...).
         source: The skill directory.
         destination: Absolute destination directory.
+        project: Project root for project-scope targets; empty for user-scope ones,
+            which have no project to attach a hook to.
     """
 
     target: str
     source: Path
     destination: Path
+    project: Path | None = None
 
 
 def _fail(message: str) -> NoReturn:
@@ -145,6 +155,24 @@ def _project_root(explicit: str | None) -> Path | None:
     return found
 
 
+def _explicit_home(raw: str) -> Path:
+    """Validate the ``--home`` value for the ``home`` target.
+
+    Args:
+        raw: Path from argv.
+
+    Returns:
+        Absolute home directory.
+
+    Raises:
+        SystemExit: When the path does not exist or is not a directory.
+    """
+    root = Path(raw).expanduser().resolve()
+    if not root.is_dir():
+        _fail(f"--home {root} is not an existing directory")
+    return root
+
+
 def _openclaw_root(dest: str | None) -> Path:
     """Resolve the OpenClaw workspace root.
 
@@ -169,6 +197,7 @@ def build_plans(
     targets: list[str],
     dest: str | None = None,
     project: str | None = None,
+    home: str | None = None,
 ) -> list[InstallPlan]:
     """Build the install plan for the requested targets.
 
@@ -176,12 +205,15 @@ def build_plans(
         targets: Target ids; ``all`` expands to every project-scope target.
         dest: Destination root for ``openclaw``.
         project: Explicit project root for project-scope targets.
+        home: Explicit home directory for the ``home`` target. Mandatory: the whole
+            point of the target is that the path is stated rather than assumed.
 
     Returns:
         One :class:`InstallPlan` per resolved target, in a stable order.
 
     Raises:
-        SystemExit: On an unknown target or a project-scope target with no project.
+        SystemExit: On an unknown target, a project-scope target with no project, or
+            ``home`` without ``--home``.
     """
     if not (SKILL_DIR / "SKILL.md").is_file():
         _fail(f"{SKILL_DIR} has no SKILL.md; this script must live inside a skill")
@@ -201,6 +233,13 @@ def build_plans(
         _fail(
             f"unknown target(s) {', '.join(sorted(set(unknown)))}; "
             f"known: {', '.join(_ALL_TARGETS)}"
+        )
+
+    if _HOME_EXPLICIT_TARGET in requested and not home:
+        _fail(
+            "--target home requires --home <path>. The path is deliberately not defaulted to "
+            "~: on a machine with several users or a shared volume, a silent default installs "
+            "the skill into a home nobody chose."
         )
 
     needs_project = [t for t in requested if t in _PROJECT_TARGETS]
@@ -223,13 +262,23 @@ def build_plans(
 
         if target == _OPENCLAW_TARGET:
             destination = _openclaw_root(dest) / "skills" / skill_id
+        elif target == _HOME_EXPLICIT_TARGET:
+            assert home is not None  # guarded above
+            destination = _explicit_home(home) / ".cursor" / "skills" / skill_id
         elif target in _HOME_TARGETS:
             destination = Path.home() / _HOME_TARGETS[target] / skill_id
         else:
             assert root is not None  # guarded above
             destination = root / _PROJECT_TARGETS[target] / skill_id
 
-        plans.append(InstallPlan(target=target, source=SKILL_DIR, destination=destination))
+        plans.append(
+            InstallPlan(
+                target=target,
+                source=SKILL_DIR,
+                destination=destination,
+                project=root if target in _PROJECT_TARGETS else None,
+            )
+        )
 
     return plans
 
@@ -269,14 +318,37 @@ def _ensure_dir(path: Path) -> None:
 
 
 def _ensure_file_mode(path: Path) -> None:
-    """Clamp a file mode so no world bits survive.
+    """Clamp a file mode so no world bits survive, keeping the owner's exec bit.
+
+    A hook script that loses ``+x`` is an install that looks correct and fails on the
+    first tool call — Cursor reports the hook as failed, and with ``failClosed: true``
+    that blocks the agent. So the owner bits are carried over from the source file
+    rather than reset to a read-write default.
 
     Args:
         path: File just written.
     """
     current = path.stat().st_mode & 0o777
-    if current & 0o007:
-        os.chmod(path, current & _FILE_MODE)
+    # 0o660 has no exec bit, so masking alone strips +x from hook wrappers. The
+    # owner-only bits are allowed through; group and world stay clamped (§5.9).
+    allowed = _FILE_MODE | 0o100
+    clamped = current & allowed
+    if current != clamped:
+        os.chmod(path, clamped)
+
+
+def _copy_file(source: Path, target: Path) -> None:
+    """Copy one file, preserving the owner's exec bit within the permission policy.
+
+    Args:
+        source: File in the skill directory.
+        target: Destination file.
+    """
+    shutil.copy2(source, target)
+    _ensure_file_mode(target)
+    if source.stat().st_mode & 0o100 and not target.stat().st_mode & 0o100:
+        # Scripts (hook wrappers, runner entry points) must stay executable.
+        os.chmod(target, target.stat().st_mode | 0o100)
 
 
 def _check_destination(destination: Path) -> None:
@@ -331,6 +403,171 @@ def _prune_stale(destination: Path, expected: set[Path], dry_run: bool) -> list[
     return stale
 
 
+#: Config file each harness reads for hooks, relative to the project root, and the
+#: template that fills it. Claude Code and Codex read a nested shape; Cursor reads a
+#: flat one. All three point at the same wrapper, so the gate has one entry point.
+_PROJECT_HOOK_FILES: Final[dict[str, tuple[Path, str]]] = {
+    "cursor": (Path(".cursor") / "hooks.json", "cursor.hooks.json"),
+    "claude": (Path(".claude") / "settings.json", "claude.settings.json"),
+    "codex": (Path(".codex") / "hooks.json", "codex.hooks.json"),
+}
+
+
+def _gate_wrapper(plan: InstallPlan) -> Path:
+    """Path to the installed wrapper script for one plan.
+
+    Args:
+        plan: Target descriptor.
+
+    Returns:
+        Absolute path to ``hooks/run-gate.sh`` inside the installed skill.
+    """
+    return plan.destination / "hooks" / "run-gate.sh"
+
+
+def _hook_marker(plan: InstallPlan) -> str:
+    """Substring that identifies this skill's own entry in any harness config.
+
+    Built from the installed skill's relative location rather than a fixed prefix:
+    Cursor installs under ``.cursor/skills`` and Codex under ``.agents/skills``, so a
+    hardcoded prefix would fail to recognise the entry and the merge would append a
+    duplicate on every re-run.
+
+    Args:
+        plan: Target descriptor.
+
+    Returns:
+        The wrapper path fragment used for filtering.
+    """
+    return f"{plan.destination.parent.name}/{plan.destination.name}/hooks/run-gate.sh"
+
+
+def _render_template(template: Path, plan: InstallPlan) -> dict[str, Any]:
+    """Read a hook template, refusing anything that would need a baked-in path.
+
+    Each template references the installed wrapper through a variable its harness
+    documents, so the same file works in any project on any machine:
+
+    * Cursor — ``$CURSOR_PROJECT_DIR`` (documented env var for project hooks);
+    * Claude Code — ``${CLAUDE_PROJECT_DIR}`` (documented in the hooks reference);
+    * Codex — no project variable exists, so the repository root is resolved with
+      ``git rev-parse --show-toplevel`` at run time, which is what Codex's own hook
+      examples do.
+
+    The ledger is never substituted: it does not exist at install time and lives in a
+    per-project place, so the gate discovers it from the project contract.
+
+    Args:
+        template: Template file inside ``hooks/``.
+        plan: Target descriptor, used only for the error message.
+
+    Returns:
+        Parsed JSON, unchanged.
+
+    Raises:
+        SystemExit: When a template asks for a value that cannot be portable.
+    """
+    del plan
+    text = template.read_text(encoding="utf-8")
+    if "__LEDGER__" in text:
+        raise SystemExit(
+            f"{template.name} still asks for __LEDGER__. The ledger is discovered from the "
+            "project contract, so no absolute path may be baked into a hook template."
+        )
+    if "__GATE_WRAPPER__" in text:
+        raise SystemExit(
+            f"{template.name} uses __GATE_WRAPPER__, which would bake an absolute install "
+            "path. Use the harness's project-directory variable instead."
+        )
+    return json.loads(text)
+
+
+def _merge_hook_file(hook_file: Path, rendered: dict[str, Any], marker: str, *, dry_run: bool) -> None:
+    """Write a harness hook file, keeping entries that are not this skill's.
+
+    The shapes differ per harness, so the merge is deliberately narrow: it walks the
+    ``hooks`` mapping, keeps every event list intact except the one this skill owns, and
+    drops only entries whose JSON mentions this skill's path. Replacing the file would
+    delete hooks the installer cannot see.
+
+    Args:
+        hook_file: Destination config file.
+        rendered: Template with placeholders substituted.
+        marker: Substring identifying this skill's own entries.
+        dry_run: When true, report without writing.
+    """
+    existing: dict[str, Any] = {}
+    if hook_file.is_file():
+        try:
+            existing = json.loads(hook_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise SystemExit(
+                f"{hook_file} is not valid JSON ({exc}); fix it by hand rather than risk "
+                "losing hooks this installer does not know about"
+            ) from exc
+        if not isinstance(existing, dict):
+            raise SystemExit(f"{hook_file} is not a JSON object; refusing to merge into it")
+
+    merged = {**existing}
+    merged.update({k: v for k, v in rendered.items() if k != "hooks"})
+    existing_hooks = existing.get("hooks") if isinstance(existing.get("hooks"), dict) else {}
+    new_hooks = rendered.get("hooks", {})
+
+    hooks: dict[str, Any] = {**existing_hooks}
+    for event, new_entries in new_hooks.items():
+        old = existing_hooks.get(event)
+        old_list = old if isinstance(old, list) else []
+        # Nested shapes (Claude, Codex) wrap the command in `hooks: [...]`; the marker
+        # is inside that JSON either way, so one filter covers both shapes.
+        kept = [item for item in old_list if marker not in json.dumps(item)]
+        hooks[event] = [*new_entries, *kept]
+    merged["hooks"] = hooks
+
+    print(f"    {'would write' if dry_run else 'write'} {hook_file} ({', '.join(new_hooks) or 'hooks'})")
+    if dry_run:
+        return
+    _ensure_dir(hook_file.parent)
+    hook_file.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    _ensure_file_mode(hook_file)
+
+
+def _write_project_hooks(plan: InstallPlan, *, dry_run: bool) -> None:
+    """Wire the gate into every harness that reads a project-level hook file.
+
+    One entry point (``hooks/run-gate.sh``) for all of them: the gate already speaks
+    each harness's payload shape, so the difference between harnesses lives in the
+    config file, not in the logic. That is also why a fix in the gate reaches all five
+    at once.
+
+    Args:
+        plan: Target descriptor.
+        dry_run: When true, report the action without writing.
+    """
+    if plan.project is None:
+        return
+    # The marker is derived from the installed location, so it recognises this skill's
+    # entry whatever directory the harness installs skills into.
+    marker = _hook_marker(plan)
+    written = 0
+
+    for target, (relative, template_name) in _PROJECT_HOOK_FILES.items():
+        template = SKILL_DIR / "hooks" / template_name
+        if not template.is_file():
+            continue
+        # `all` is expanded into concrete targets before plans are built, so matching
+        # the plan's own target is enough.
+        if target == plan.target:
+            rendered = _render_template(template, plan)
+            _merge_hook_file(plan.project / relative, rendered, marker, dry_run=dry_run)
+            written += 1
+
+    if written == 0:
+        print(
+            f"    no hook file for target {plan.target!r}: the wrapper was installed, but the "
+            "gate is not wired for it (supported: cursor, claude, codex)"
+        )
+
+
 def install(plan: InstallPlan, *, dry_run: bool) -> list[Path]:
     """Copy the skill into one destination, pruning stale files.
 
@@ -353,15 +590,102 @@ def install(plan: InstallPlan, *, dry_run: bool) -> list[Path]:
         print(f"    {'would prune' if dry_run else 'prune'} {relative}")
 
     if dry_run:
+        _write_project_hooks(plan, dry_run=True)
         return stale
 
     for relative in files:
         target = plan.destination / relative
         _ensure_dir(target.parent)
-        shutil.copy2(plan.source / relative, target)
-        _ensure_file_mode(target)
+        _copy_file(plan.source / relative, target)
+
+    _write_project_hooks(plan, dry_run=False)
 
     return stale
+
+
+def _strip_hook_entries(hook_file: Path, marker: str, *, dry_run: bool) -> bool:
+    """Remove this skill's entry from one harness config, keeping everything else.
+
+    Args:
+        hook_file: Harness config file.
+        marker: Substring identifying this skill's entries.
+        dry_run: When true, report without writing.
+
+    Returns:
+        ``True`` when an entry was found (or would be removed).
+    """
+    if not hook_file.is_file():
+        return False
+    try:
+        payload = json.loads(hook_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        # Leftover install with a hand-broken config: report, do not destroy it.
+        print(f"    {hook_file} is not valid JSON; remove the entry by hand", file=sys.stderr)
+        return False
+    if not isinstance(payload, dict):
+        return False
+    hooks = payload.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+
+    removed = False
+    for event, entries in list(hooks.items()):
+        if not isinstance(entries, list):
+            continue
+        kept = [item for item in entries if marker not in json.dumps(item)]
+        if len(kept) != len(entries):
+            removed = True
+            hooks[event] = kept
+
+    if not removed:
+        return False
+
+    # Drop event lists that became empty: an empty `preToolUse: []` is noise that
+    # suggests a hook is configured when none is.
+    payload["hooks"] = {event: items for event, items in hooks.items() if items != []}
+
+    print(f"    {'would clean' if dry_run else 'clean'} {hook_file}")
+    if not dry_run:
+        if payload["hooks"]:
+            hook_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        else:
+            hook_file.unlink()
+    return True
+
+
+def uninstall(plan: InstallPlan, *, dry_run: bool) -> int:
+    """Remove an installed skill and every hook entry that points at it.
+
+    The hook entry is the dangerous half: a leftover command pointing at a deleted
+    wrapper is a ``failClosed`` hook that blocks every tool call, and the agent reports
+    a broken guard rather than a missing skill. So both halves are removed together, and
+    a destination that does not exist is not an error — uninstalling twice is harmless.
+
+    Args:
+        plan: Target descriptor.
+        dry_run: When true, report without deleting.
+
+    Returns:
+        Number of things removed (directory + hook files).
+    """
+    removed = 0
+    marker = _hook_marker(plan)
+
+    print(f"{'[dry-run] ' if dry_run else ''}==> uninstall {plan.target}: {plan.destination}")
+    if plan.destination.is_dir():
+        print(f"    {'would remove' if dry_run else 'remove'} {plan.destination}")
+        if not dry_run:
+            shutil.rmtree(plan.destination)
+        removed += 1
+    else:
+        print("    skill directory not present")
+
+    if plan.project is not None:
+        for relative, _ in _PROJECT_HOOK_FILES.values():
+            if _strip_hook_entries(plan.project / relative, marker, dry_run=dry_run):
+                removed += 1
+
+    return removed
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -392,6 +716,22 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
             "checkout containing this skill"
         ),
     )
+    parser.add_argument(
+        "--home",
+        default=None,
+        help=(
+            "home directory for --target home; mandatory, because a silent default of ~ "
+            "installs into a home nobody chose"
+        ),
+    )
+    parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        help=(
+            "remove the installed skill and this skill's hook entries; a removal that "
+            "left the hook behind would block every tool call via failClosed"
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
     return parser.parse_args(argv)
 
@@ -406,10 +746,19 @@ def main(argv: list[str] | None = None) -> int:
         Process exit code.
     """
     args = _parse_args(argv)
-    plans = build_plans(list(args.target), args.dest, args.project)
+    plans = build_plans(list(args.target), args.dest, args.project, args.home)
 
     if args.dry_run:
         print(f"[dry-run] source: {SKILL_DIR}")
+
+    if args.uninstall:
+        total = 0
+        for plan in plans:
+            total += uninstall(plan, dry_run=args.dry_run)
+        verb = "would remove" if args.dry_run else "removed"
+        prefix = "[dry-run] " if args.dry_run else ""
+        print(f"{prefix}{verb} {total} item(s) for {_skill_id()}")
+        return 0
 
     for plan in plans:
         install(plan, dry_run=args.dry_run)

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"__PYTHON__\" \"__GATE__\" --ledger \"__LEDGER__\"",
+            "command": "\"${CLAUDE_PROJECT_DIR}/.claude/skills/bug-fixer/hooks/run-gate.sh\"",
             "timeout": 10,
             "onFailure": "block"
           }

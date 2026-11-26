@@ -4,9 +4,11 @@
 # Usage:
 #   ./install.sh --target cursor
 #   ./install.sh --target all --dry-run
-#   ./install.sh --target personal                # ~/.cursor/skills, every project
+#   ./install.sh --target home --home ~               # explicit path is mandatory
+#   ./install.sh --target personal                    # ~/.cursor/skills, every project
 #   ./install.sh --target openclaw --dest ~/workspace
 #   ./install.sh --target cursor --project /path/to/repo
+#   ./install.sh --target cursor --project /path/to/repo --uninstall
 #
 # Logic lives in install.py (repo rule: no inline Python in bash).
 

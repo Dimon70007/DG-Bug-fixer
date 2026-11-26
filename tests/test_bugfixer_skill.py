@@ -66,6 +66,21 @@ _EDGE_NAMES = (
 )
 
 
+def _load_contract():
+    """Import the contract schema module from its file path."""
+    path = _SKILL_DIR / "lib" / "bugfixer" / "contract.py"
+    spec = importlib.util.spec_from_file_location("bugfixer_contract_skill_test", path)
+    assert spec and spec.loader, f"cannot load {path}"
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(spec.name, None)
+        raise
+    return module
+
+
 def _load_installer():
     """Import the installer module from its file path.
 
@@ -287,11 +302,24 @@ def test_no_forbidden_research_or_privilege_instructions() -> None:
 
 
 def test_contract_template_covers_every_required_field() -> None:
-    """The template must demand all four values a run depends on."""
+    """The template and the validator must require the same set — checked through the schema.
+
+    The previous version looked for the words "Ledger", "Tests", "Search", "prohibitions".
+    It passed while the template had no `Test paths:` at all, which is exactly the defect that
+    left the gate unable to find its ledger. Comparing against the schema's field list makes
+    that class of drift impossible: a field the validator requires is a field the template
+    must teach.
+    """
+    contract = _load_contract()
     template = (_SKILL_DIR / "references" / "project-contract.md").read_text(encoding="utf-8")
-    for field in ("Ledger", "Tests", "Search", "prohibitions"):
-        assert field in template, f"contract template has no {field!r} section"
+    missing = [
+        name
+        for name, rule in contract.FIELD_POINTS.items()
+        if rule.required and rule.names.search(template) is None
+    ]
+    assert not missing, f"the template never teaches required fields: {missing}"
     assert "bug-fixer.project.md" in template, "template does not name the lookup file"
+    assert len(contract.SPEC_POINTS) == 4, "the contract must require exactly the four §6 points"
 
 
 def test_skill_is_not_pinned_to_one_repository() -> None:
@@ -654,18 +682,26 @@ def test_destination_file_conflict_fails_closed(tmp_path: Path) -> None:
 
 
 def test_installed_permissions_grant_no_world_access(tmp_path: Path) -> None:
-    """Dirs stay <= 770 and files <= 660 (repo rule 5.9)."""
+    """Dirs stay <= 770 and files <= 660, everywhere in the installed tree (repo rule 5.9).
+
+    The check walks the whole destination, not just ``hooks/``: the plugin's own tree grows
+    (``lib/`` arrived with the CLI), and a directory nobody remembered to clamp ships
+    world-readable. That is how ``lib/`` was caught at 0755.
+    """
     dest_root = tmp_path / "ws"
     dest_root.mkdir()
     result = _run_installer("--target", "openclaw", "--dest", str(dest_root))
     assert result.returncode == 0, result.stderr
 
     skill_dir = dest_root / "skills" / "bug-fixer"
+    offenders: list[str] = []
     for path in skill_dir.rglob("*"):
         mode = path.stat().st_mode & 0o777
-        assert not mode & 0o007, f"{path} grants world access ({oct(mode)})"
-        if path.is_dir():
-            assert mode & 0o777 <= 0o770, f"{path} dir mode {oct(mode)} exceeds 770"
+        if mode & 0o007:
+            offenders.append(f"{path.relative_to(skill_dir)} grants world access ({oct(mode)})")
+        elif path.is_dir() and mode > 0o770:
+            offenders.append(f"{path.relative_to(skill_dir)} dir mode {oct(mode)} exceeds 770")
+    assert not offenders, offenders
 
 
 def test_the_plugin_tests_are_not_installed(tmp_path: Path) -> None:

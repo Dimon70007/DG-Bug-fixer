@@ -73,6 +73,20 @@ skill **asks** and writes the file using the template. It does not guess a test 
 See [`references/project-contract.md`](references/project-contract.md) for the template and
 two filled examples.
 
+Validate the result with `bugfixer doctor`: it reads the file by the same rules the gate
+does, so a contract it accepts is one the gate can actually enforce. Two fields deserve a
+word, because both used to be wrong:
+
+- **`Test paths:`** is required, and it is *not* a fifth requirement. It is a detail of the
+  full-suite point: `§1` forbids production edits before the cause is confirmed while
+  allowing test edits, so the gate must be able to tell them apart, and `§0` forbids
+  guessing a path. The contract therefore carries it inside point 2.
+- **`Raw dumps:`** is optional. Without it, logs too large for the task file stay in the
+  task file (`§5.3`); `doctor` warns and exits `0`.
+
+Before stage 2 the template omitted `Test paths:` altogether, so a project that followed the
+template produced a gate that could not find its own ledger and silently allowed every write.
+
 ---
 
 ## What is in here
@@ -87,7 +101,16 @@ bug-fixer/
 ├── install.sh                    # argv forwarder for install.py
 ├── references/
 │   ├── workflow.md               # discriminators, results tables, anti-patterns
-│   └── project-contract.md       # TEMPLATE: fill this for your project
+└── project-contract.md       # TEMPLATE: fill this for your project
+├── bin/
+│   └── bugfixer                  # single entry point: `bugfixer doctor`
+├── lib/
+│   └── bugfixer/
+│       └── contract.py           # the contract schema: four §6 points, one reader
+├── tests/                        # the plugin's own suite (not copied into a target)
+│   ├── fixtures/
+│   │   └── canonical-ledger.md   # spec §14 example, guarded for equality in the parent
+│   └── test_bugfixer_*.py
 ├── hooks/                        # optional enforcement gate + harness matrix
 │   ├── bugfixer_gate.py
 │   ├── bugfixer_gate_state.py

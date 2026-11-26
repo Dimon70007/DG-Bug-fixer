@@ -318,6 +318,10 @@ def _iter_source_files(source: Path) -> list[Path]:
 def _ensure_dir(path: Path) -> None:
     """Create ``path`` and clamp its mode to the policy.
 
+    Only the deepest directory is clamped here: ``mkdir(parents=True)`` also creates every
+    ancestor, and those keep the process umask (0755 on macOS). ``_clamp_tree`` fixes the rest
+    once the copy is done, which is the only place that knows the install root.
+
     Args:
         path: Directory to create (parents included).
     """
@@ -325,6 +329,29 @@ def _ensure_dir(path: Path) -> None:
     current = path.stat().st_mode & 0o777
     if current & 0o007:
         os.chmod(path, current & _DIR_MODE)
+
+
+def _clamp_tree(root: Path) -> None:
+    """Apply the permission policy to every directory and file under ``root``.
+
+    Walking the finished tree is what keeps the policy true when the plugin grows: each new
+    directory used to need its own ``_ensure_dir`` call, and the one nobody added shipped
+    world-readable. ``lib/`` was found at 0755 exactly that way.
+
+    Args:
+        root: Installed skill directory.
+    """
+    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        mode = path.stat().st_mode & 0o777
+        if path.is_dir():
+            clamped = mode & _DIR_MODE
+        else:
+            clamped = mode & (_FILE_MODE | 0o100)
+        if clamped != mode:
+            os.chmod(path, clamped)
+    root_mode = root.stat().st_mode & 0o777
+    if root_mode & 0o007:
+        os.chmod(root, root_mode & _DIR_MODE)
 
 
 def _ensure_file_mode(path: Path) -> None:
@@ -609,6 +636,7 @@ def install(plan: InstallPlan, *, dry_run: bool) -> list[Path]:
         _copy_file(plan.source / relative, target)
 
     _write_project_hooks(plan, dry_run=False)
+    _clamp_tree(plan.destination)
 
     return stale
 

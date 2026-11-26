@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""The bug-fixer plugin's single entry point.
+
+One command instead of relative script paths: an installed plugin is executed from a
+project's working directory, where ``python3 hooks/…`` resolves to nothing. Stage 3 adds the
+``gate``/``state``/``secrets`` verbs to this file; stage 2 ships ``doctor``, because a
+contract nobody can validate is a contract that silently disables the gate.
+
+    bugfixer doctor [--project <dir>]     # is this project's contract usable?
+
+Exit codes: ``0`` usable (warnings allowed), ``2`` refused or invalid input.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+from typing import Final
+
+# The plugin root is this file's grandparent: ``bin/bugfixer`` -> ``<plugin>``. Taken from the
+# file rather than from the working directory, because the agent's cwd is the project.
+PLUGIN_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
+if str(PLUGIN_ROOT / "lib") not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT / "lib"))
+
+from bugfixer import contract  # noqa: E402
+
+EXIT_OK: Final[int] = 0
+EXIT_REFUSED: Final[int] = 2
+
+
+def _doctor(project: Path) -> int:
+    """Check the project's contract and report what the gate would do with it.
+
+    Args:
+        project: Project directory to inspect.
+
+    Returns:
+        ``0`` when the contract is usable, ``2`` when it is missing or incomplete.
+    """
+    path = contract.find(project)
+    if path is None:
+        print(
+            f"no {contract.CONTRACT_NAME} at or above {project.resolve()}. Phase 0 of the "
+            "skill stops and asks for one; it does not guess a test command or a ledger path.",
+            file=sys.stderr,
+        )
+        return EXIT_REFUSED
+
+    text = path.read_text(encoding="utf-8", errors="replace")
+    report = contract.check(text)
+    for warning in report.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    if report.problems:
+        print(f"{path}: not usable", file=sys.stderr)
+        for problem in report.problems:
+            print(f"  - {problem}", file=sys.stderr)
+        return EXIT_REFUSED
+
+    print(f"{path}: ok")
+    print(f"  ledger pattern : {contract.ledger_pattern(text)}")
+    print(f"  test paths     : {', '.join(contract.test_paths(text))}")
+    # The resolved ledger is reported because doctor and the gate used to disagree about it:
+    # a contract could pass validation and still leave the gate with nothing to enforce.
+    resolved = _resolve_ledger(project)
+    if resolved is None:
+        print(
+            "  ledger         : none matched yet — no run is active, so the gate stays inert",
+        )
+    else:
+        print(f"  ledger         : {resolved}")
+    return EXIT_OK
+
+
+def _resolve_ledger(project: Path) -> Path | None:
+    """Return the ledger the gate would bind to, without duplicating its rules.
+
+    The gate owns discovery, so it is imported rather than reimplemented: two copies of
+    "which file is the ledger" would drift, and the drift is invisible until a run is under
+    way and the guard is off.
+
+    Args:
+        project: Project directory.
+
+    Returns:
+        Ledger path, or ``None`` when no run can be identified.
+    """
+    hooks = PLUGIN_ROOT / "hooks"
+    if str(hooks) not in sys.path:
+        sys.path.insert(0, str(hooks))
+    import bugfixer_gate as gate  # noqa: PLC0415 — imported lazily: doctor is stdlib-cheap
+
+    return gate.discover_ledger(project.resolve())
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Parse arguments and dispatch.
+
+    Args:
+        argv: Argument list; defaults to ``sys.argv[1:]``.
+
+    Returns:
+        Process exit code.
+    """
+    parser = argparse.ArgumentParser(
+        prog="bugfixer",
+        description="bug-fixer plugin commands. `doctor` validates the project contract.",
+    )
+    sub = parser.add_subparsers(dest="verb", required=True)
+    doctor = sub.add_parser("doctor", help="validate the project contract")
+    doctor.add_argument(
+        "--project",
+        default=".",
+        help="project directory to inspect (default: the current directory)",
+    )
+    args = parser.parse_args(argv)
+
+    if args.verb == "doctor":
+        project = Path(args.project).expanduser()
+        if not project.is_dir():
+            print(f"bugfixer: --project {project} is not a directory", file=sys.stderr)
+            return EXIT_REFUSED
+        return _doctor(project)
+    parser.error(f"unknown verb {args.verb!r}")
+    return EXIT_REFUSED
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -16,10 +16,10 @@
  * to the agent as "the guard is broken", which is the one failure mode that
  * must never be ambiguous.
  *
- * DECLINED — no `session_start` / `sessionStart` hook: the gate enforces what happens
- * during a run, and a session hook would inject a second copy of the skill's name and description
- * into a context that already has them from the skill itself. A second copy is a second thing
- * to keep in step, and nothing in the workflow depends on it.
+ * No session hook here: OpenCode fires `tool.execute.before` and nothing that injects text into the
+ * session, so registering one would be an event the host ignores — a hook that looks wired and is
+ * silent, which §0 calls the worst failure. The project rule in `AGENTS.md` (or `CLAUDE.md`, which
+ * OpenCode falls back to) carries the initialisation instruction instead (spec §18.3, invariant 41).
  *
  * KNOWN LIMITATION: OpenCode does not fire `tool.execute.before` for subagent
  * tool calls (anomalyco/opencode#5894). A subagent can therefore act despite a

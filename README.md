@@ -101,12 +101,16 @@ bug-fixer/
 ├── install.sh                    # argv forwarder for install.py
 ├── references/
 │   ├── workflow.md               # discriminators, results tables, anti-patterns
-└── project-contract.md       # TEMPLATE: fill this for your project
+│   ├── init.md                   # step 0a: confirm what `init` derived
+│   ├── project-rule.md           # the rules file: why the main channel is not a hook
+│   └── project-contract.md       # TEMPLATE: fill this for your project
 ├── bin/
-│   └── bugfixer                  # single entry point: `bugfixer doctor`
+│   └── bugfixer                  # single entry point: `bugfixer doctor` / `init`
 ├── lib/
 │   └── bugfixer/
-│       └── contract.py           # the contract schema: four §6 points, one reader
+│       ├── contract.py           # the contract schema: four §6 points, one reader
+│       ├── readiness.py          # is this project ready? one answer for doctor + hook
+│       └── rules.py             # the project rule: written, merged, removed
 ├── tests/                        # the plugin's own suite (not copied into a target)
 │   ├── fixtures/
 │   │   └── canonical-ledger.md   # spec §14 example, guarded for equality in the parent
@@ -116,6 +120,9 @@ bug-fixer/
 │   ├── bugfixer_gate_state.py
 │   ├── bugfixer_secrets.py       # secret scanner for records and diffs
 │   ├── run-gate.sh               # portable preToolUse entry point (no absolute paths)
+│   ├── session-start             # portable sessionStart entry point (§18.4, best-effort)
+│   ├── session_start.py          # what to say, and which adapter says it
+│   ├── adapters/                 # one file per harness: cursor, claude, codex, opencode, openclaw
 │   ├── hooks-cursor.json         # Cursor-format hooks used by the plugin manifest
 │   ├── cursor.hooks.json         # template for a project-level hook, if you wire it by hand
 │   ├── verify_harnesses.py
@@ -230,9 +237,15 @@ For a project-scope target the installer also writes `<project>/.cursor/hooks.js
 {
   "version": 1,
   "hooks": {
+    "sessionStart": [
+      {
+        "command": "\"$CURSOR_PROJECT_DIR/.cursor/skills/bug-fixer/hooks/session-start\" cursor",
+        "timeout": 10
+      }
+    ],
     "preToolUse": [
       {
-        "command": ".cursor/skills/bug-fixer/hooks/run-gate.sh",
+        "command": "\"$CURSOR_PROJECT_DIR/.cursor/skills/bug-fixer/hooks/run-gate.sh\"",
         "timeout": 10,
         "failClosed": true
       }
@@ -240,6 +253,9 @@ For a project-scope target the installer also writes `<project>/.cursor/hooks.js
   }
 }
 ```
+
+`sessionStart` carries the harness id as its argument: the harness chose the adapter by
+registering this file, and the adapter is the only thing that knows that harness's JSON shape.
 
 Three details, each from Cursor's hooks documentation and each load-bearing:
 
@@ -273,6 +289,40 @@ shape**, never the logic — so a fix in `bugfixer_gate.py` reaches all of them 
 No path is baked in at install time. That is deliberate: an absolute path is correct on
 exactly one machine, and the failure is silent — the hook points at a file that is not
 there, `failClosed` blocks every tool call, and the agent reports a broken guard.
+
+### Where the agent learns it must check first — a rule, not a hook
+
+The gate refuses the first unauthorised write, which is the mechanism that cannot be bypassed,
+but it refuses **late**: by then the agent has read code and planned against a test command that
+may not exist. So the main initialisation channel is a **rules file**, which the harness reads
+itself with no hook involved:
+
+| Harness | File | Registration |
+|---|---|---|
+| Cursor | `.cursor/rules/bug-fixer.mdc` | `alwaysApply: true` |
+| Claude Code | `CLAUDE.md` | one-line import `@AGENTS.md` |
+| Codex / OpenCode / OpenClaw | `AGENTS.md` | read from the repository root |
+
+The block is five lines: *run `bugfixer doctor` before the first edit, and a non-zero exit means
+initialise first (`references/init.md`)*. It names no test command and no ledger — those are the
+project's answers, held in the contract, and the check reads them. A copy in the rule would be a
+second place to keep in step, and the stale copy is the one the agent would trust.
+
+The rule is written into the **project**, not shipped inside the plugin bundle: Cursor downgrades
+`alwaysApply: true` for rules that come from a plugin to "agent decides" (confirmed vendor bug, no
+fix date), so a bundled rule would arrive as a suggestion. Both entry points place it —
+`install.py` for the harness being installed into, and `bugfixer init` for all three files at once,
+because a plugin installed from a marketplace never runs the installer and would otherwise leave
+the project with a gate and no instruction. `AGENTS.md` and `CLAUDE.md` belong to the project too,
+so the installer **merges** its marked block and never replaces the file; a re-install does not
+stack a second copy, and `--uninstall` removes exactly the block it added. See
+[`references/project-rule.md`](references/project-rule.md).
+
+The `sessionStart` hook is registered as well, and it is **best-effort**: Cursor runs it, accepts
+the JSON and does not deliver `additional_context` to the model (vendor bug since April 2026,
+confirmed by Cursor staff, no ETA). Nothing depends on delivery — the rule says the same thing and
+the gate enforces it. When the channel starts working, the message gains precision without any
+change to the wiring.
 
 Two harness behaviours worth knowing before you rely on this:
 

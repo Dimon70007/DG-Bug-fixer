@@ -42,6 +42,7 @@ if str(SKILL_DIR / "lib") not in sys.path:
     sys.path.insert(0, str(SKILL_DIR / "lib"))
 
 from bugfixer import contract as contract_module  # noqa: E402
+from bugfixer import rules as rules_module  # noqa: E402
 
 #: The contract file name, taken from the schema so there is one literal in the plugin.
 CONTRACT_NAME: Final[str] = contract_module.CONTRACT_NAME
@@ -473,20 +474,21 @@ def _gate_wrapper(plan: InstallPlan) -> Path:
 
 
 def _hook_marker(plan: InstallPlan) -> str:
-    """Substring that identifies this skill's own entry in any harness config.
+    """Substring that identifies this skill's own entries in any harness config.
 
-    Built from the installed skill's relative location rather than a fixed prefix:
-    Cursor installs under ``.cursor/skills`` and Codex under ``.agents/skills``, so a
-    hardcoded prefix would fail to recognise the entry and the merge would append a
-    duplicate on every re-run.
+    Built from the installed skill's relative location rather than a fixed prefix, and it names
+    the ``hooks/`` directory rather than one script inside it: a plugin wires more than one entry
+    (the gate, and the session-start status), and a marker tied to the gate left the status entry
+    pointing at a deleted file after `--uninstall` — a fail-closed hook on every tool call, which
+    is the exact failure this marker exists to prevent.
 
     Args:
         plan: Target descriptor.
 
     Returns:
-        The wrapper path fragment used for filtering.
+        The directory fragment used for filtering.
     """
-    return f"{plan.destination.parent.name}/{plan.destination.name}/hooks/run-gate.sh"
+    return f"{plan.destination.parent.name}/{plan.destination.name}/hooks/"
 
 
 def _render_template(template: Path, plan: InstallPlan) -> dict[str, Any]:
@@ -615,6 +617,34 @@ def _write_project_hooks(plan: InstallPlan, *, dry_run: bool) -> None:
         )
 
 
+def _write_project_rules(plan: InstallPlan, *, dry_run: bool) -> None:
+    """Give the project's harness the rule that sends the agent to `bugfixer doctor`.
+
+    Spec §18.3 makes a rules file the main initialisation channel, because `sessionStart` does not
+    deliver its context in Cursor (§18.4). The rule is written for the harness being installed into
+    and merged into files that belong to the project, so nothing the project wrote is lost and a
+    re-install does not stack a second copy.
+
+    Which file each harness gets is decided in :mod:`bugfixer.rules`, not here: `init` places the
+    same rule for every harness, and two copies of that mapping would eventually disagree.
+
+    Args:
+        plan: Target descriptor; only project-scope plans have a project to write into.
+        dry_run: When true, report the action without writing.
+    """
+    if plan.project is None:
+        return
+
+    prefix = "would write" if dry_run else "write"
+    for merged in rules_module.for_harness(plan.project, plan.target, dry_run=dry_run):
+        if merged.action == "unchanged":
+            print(f"    keep {merged.path} (rule already present)")
+        elif merged.action == "kept":
+            print(f"    keep {merged.path} (already imports AGENTS.md)")
+        else:
+            print(f"    {prefix} {merged.path} ({merged.action}: project rule for {plan.target})")
+
+
 def install(plan: InstallPlan, *, dry_run: bool) -> list[Path]:
     """Copy the skill into one destination, pruning stale files.
 
@@ -638,6 +668,7 @@ def install(plan: InstallPlan, *, dry_run: bool) -> list[Path]:
 
     if dry_run:
         _write_project_hooks(plan, dry_run=True)
+        _write_project_rules(plan, dry_run=True)
         _seed_contract(plan, dry_run=True)
         return stale
 
@@ -647,6 +678,7 @@ def install(plan: InstallPlan, *, dry_run: bool) -> list[Path]:
         _copy_file(plan.source / relative, target)
 
     _write_project_hooks(plan, dry_run=False)
+    _write_project_rules(plan, dry_run=False)
     _seed_contract(plan, dry_run=False)
     _clamp_tree(plan.destination)
 
@@ -677,7 +709,7 @@ def _seed_contract(plan: InstallPlan, *, dry_run: bool) -> None:
     print(f"    {'would write' if dry_run else 'write'} {CONTRACT_NAME} (fill in the `<…>` fields)")
     if dry_run:
         return
-    target.write_text(contract_module.scaffold(plan.project), encoding="utf-8")
+    contract_module.write_created(target, contract_module.scaffold(plan.project))
 
 
 def _strip_hook_entries(hook_file: Path, marker: str, *, dry_run: bool) -> bool:
@@ -761,9 +793,49 @@ def uninstall(plan: InstallPlan, *, dry_run: bool) -> int:
         for relative, _ in _PROJECT_HOOK_FILES.values():
             if _strip_hook_entries(plan.project / relative, marker, dry_run=dry_run):
                 removed += 1
+        removed += _remove_project_rules(plan, dry_run=dry_run)
 
     return removed
 
+
+def _remove_project_rules(plan: InstallPlan, *, dry_run: bool) -> int:
+    """Remove the project rule this plugin added, and nothing else.
+
+    A rule left behind after removal is worse than the hook: the agent keeps being told to run
+    `bugfixer doctor`, the plugin is gone, and the command fails — a plugin that appears installed
+    and is not. So removal is paired with installation, exactly as for hook entries.
+
+    Args:
+        plan: Target descriptor; only project-scope plans wrote a rule.
+        dry_run: When true, report without writing.
+
+    Returns:
+        Number of files touched.
+    """
+    if plan.project is None:
+        return 0
+    root = plan.project
+    prefix = "would clean" if dry_run else "clean"
+    touched = 0
+
+    if plan.target == "cursor":
+        merged = rules_module.remove_owned(
+            root / rules_module.CURSOR_RULE_FILE, dry_run=dry_run
+        )
+    else:
+        merged = rules_module.strip(root / rules_module.AGENTS_FILE, dry_run=dry_run)
+        if plan.target == "claude":
+            import_merged = rules_module.strip(
+                root / rules_module.CLAUDE_FILE, dry_run=dry_run
+            )
+            if import_merged.action == "updated":
+                print(f"    {prefix} {import_merged.path} (bug-fixer import)")
+                touched += 1
+
+    if merged.action in {"removed", "updated"}:
+        print(f"    {prefix} {merged.path} (bug-fixer project rule)")
+        touched += 1
+    return touched
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     """Parse CLI arguments."""

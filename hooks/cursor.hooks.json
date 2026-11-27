@@ -1,6 +1,12 @@
 {
   "version": 1,
   "hooks": {
+    "sessionStart": [
+      {
+        "command": "\"$CURSOR_PROJECT_DIR/.cursor/skills/bug-fixer/hooks/session-start\" cursor",
+        "timeout": 10
+      }
+    ],
     "preToolUse": [
       {
         "command": "\"$CURSOR_PROJECT_DIR/.cursor/skills/bug-fixer/hooks/run-gate.sh\"",

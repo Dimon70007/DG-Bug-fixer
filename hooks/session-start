@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Session-start entry point for the bug-fixer status hook.
+#
+# Usage: ./hooks/session-start <harness>
+#        harness = cursor | claude | codex | opencode | openclaw
+#
+# Why a wrapper: a plugin hook cannot embed an absolute interpreter path, because the path differs
+# on every machine, and a plugin hook runs with the plugin directory as its working directory.
+# `python3` comes from PATH. All logic is in `session_start.py` — no Python is inlined here (§5.4).
+#
+# Best-effort by design (spec §18.4): Cursor accepts the JSON and does not deliver
+# `additional_context` to the model (vendor bug since April 2026, no ETA). Nothing depends on
+# delivery — the project rule and the gate carry the same instruction. When the vendor fixes the
+# channel, this file and its adapter need no change.
+#
+# This hook informs; it never refuses. A failed check exits 0 with a note on stderr. The only
+# non-zero exit is a wiring error — a missing or unknown harness id — which is a defect worth
+# seeing rather than a reason to stay quiet.
+set -uo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "$here/session_start.py" "$@"

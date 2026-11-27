@@ -766,6 +766,26 @@ def _detect_test_command(project: Path) -> str:
 #: project's own `.gitignore` is the only place that can say so.
 JOURNAL_IGNORE_RULES: Final[tuple[str, ...]] = ("*.bugfixer.jsonl", "*.bugfixer.json")
 
+#: Mode for a file this module creates (§5.9: no world access). Declared here rather than imported
+#: from `perms` because this module is deliberately standalone — tests and `bin/bugfixer` load it
+#: from its path, and a relative import would make it a package-only module. `perms` holds the same
+#: constant and the shared helper; this literal is the one place it is repeated, and the test that
+#: checks both files agree fails if they drift.
+_CREATED_FILE_MODE: Final[int] = 0o660
+
+
+def write_created(path: Path, text: str) -> None:
+    """Write a file the plugin creates, applying the permission policy when it is new.
+
+    Args:
+        path: Destination file.
+        text: Full contents.
+    """
+    created = not path.exists()
+    path.write_text(text, encoding="utf-8")
+    if created:
+        path.chmod(_CREATED_FILE_MODE)
+
 
 def ensure_gitignore(project: Path) -> list[str]:
     """Add the journal's ignore rules to the project's ``.gitignore``.
@@ -794,6 +814,10 @@ def ensure_gitignore(project: Path) -> list[str]:
         + "\n"
     )
     path.write_text(existing + block, encoding="utf-8")
+    if not existing:
+        # Created by the plugin, so the permission policy applies; an existing `.gitignore` keeps
+        # its own mode, which is the project's decision.
+        path.chmod(_CREATED_FILE_MODE)
     return missing
 
 

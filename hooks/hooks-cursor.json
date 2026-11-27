@@ -1,6 +1,12 @@
 {
   "version": 1,
   "hooks": {
+    "sessionStart": [
+      {
+        "command": "./hooks/session-start cursor",
+        "timeout": 10
+      }
+    ],
     "preToolUse": [
       {
         "command": "./hooks/run-gate.sh",

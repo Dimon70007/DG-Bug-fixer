@@ -401,58 +401,80 @@ def _code_lines(text: str) -> str:
     )
 
 
-def test_no_session_start_hook_is_shipped() -> None:
-    """TASK-079.5 ST-3 declined session-start injection; this keeps it declined.
+def test_session_start_is_wired_where_the_harness_accepts_it() -> None:
+    """§18.4: `sessionStart` is registered as **best-effort**, and nothing depends on delivery.
 
-    Every harness already injects the skill's name and description at session start,
-    which is the mechanism description matching runs on. A sessionStart hook would
-    inject a second copy of that trigger text on five wirings, and it cannot be built
-    on all five anyway (OpenCode has no context-injection session hook, OpenClaw's
-    session_start is observe-only, Cursor's is absent in cloud agents).
+    TASK-079.5 ST-3 declined a session-start hook for one reason: it would inject a second copy
+    of the skill's name and description. That reason does not apply to injecting *setup status* —
+    the plugin's own state, which no harness injects. The spec therefore reversed the decision
+    (invariant 41), and this test pins the reversal: the hook is registered, and it carries the
+    harness id so each harness's adapter answers in its own format.
 
-    If someone wants to add it, this test is where they have to argue the
-    duplication point rather than cite superpowers.
+    Best-effort is a requirement, not an excuse: `additional_context` is accepted by Cursor and
+    not delivered to the model (vendor bug, April 2026 onward). A test asserting delivery would be
+    asserting something this side cannot observe, and the project rule in `AGENTS.md` /
+    `.cursor/rules/bug-fixer.mdc` carries the same instruction without any hook at all.
     """
-    adapters = [
-        _HOOKS / "cursor.hooks.json",
-        _HOOKS / "claude.settings.json",
-        _HOOKS / "codex.hooks.json",
-    ]
-    for adapter in adapters:
-        text = adapter.read_text(encoding="utf-8")
-        for event in ("sessionStart", "SessionStart"):
-            assert event not in text, (
-                f"{adapter.name} wires {event}, but ST-3 declined session-start injection: "
-                "the harness already injects name+description"
-            )
-    for adapter in (_HOOKS / "opencode-plugin.ts", _HOOKS / "openclaw-plugin.ts"):
-        code = _code_lines(adapter.read_text(encoding="utf-8"))
+    wired = {
+        "cursor.hooks.json": "cursor",
+        "claude.settings.json": "claude",
+        "codex.hooks.json": "codex",
+    }
+    for name, harness in wired.items():
+        text = (_HOOKS / name).read_text(encoding="utf-8")
+        assert "session-start" in text, f"{name} does not wire the session-start hook"
+        assert harness in text, f"{name} does not tell the hook which harness it is"
+        # The gate stays wired too: it is the primary mechanism, and the rule only informs.
+        assert "run-gate.sh" in text, f"{name} dropped the gate while adding the status hook"
+
+
+def test_session_start_is_best_effort_and_says_so_where_it_is_read() -> None:
+    """A hook whose channel is broken must say so next to itself, or it reads as working.
+
+    The failure mode §0 names: a documented event that runs, logs, and delivers nothing looks
+    exactly like a working one. The note has to be in the entry point, because that is what
+    someone opens when the hook seems silent.
+    """
+    text = (_HOOKS / "session-start").read_text(encoding="utf-8")
+    assert "best-effort" in text.lower()
+    assert "additional_context" in text
+    assert "no ETA" in text or "не доставляется" in text
+    # And it must not refuse: informing is not enforcing.
+    assert "never refuses" in text or "does not refuse" in text
+
+
+def test_harnesses_without_a_context_channel_do_not_pretend_to_have_one() -> None:
+    """OpenCode has no session-context hook and OpenClaw's is `before_tool_call`-shaped.
+
+    Registering an event a harness ignores is the silent failure this whole section exists to
+    avoid, so the two TypeScript adapters stay tool-hook-only, and the reason is written down.
+    """
+    for name in ("opencode-plugin.ts", "openclaw-plugin.ts"):
+        code = _code_lines((_HOOKS / name).read_text(encoding="utf-8"))
         assert "session_start" not in code and "sessionStart" not in code, (
-            f"{adapter.name} wires a session hook, but ST-3 declined it"
+            f"{name} wires a session event its harness does not deliver"
         )
-
-
-def test_decline_is_recorded_where_a_future_reader_will_find_it() -> None:
-    """A declined decision that is not written down gets re-proposed every few months.
-
-    The decision itself lives in the plugin, not in a host project's task file: a reader of
-    a clone has no ``tasks/`` directory, so the reason has to be next to the code it governs.
-    """
-    adapters = list(_HOOKS.glob("*.ts")) + list(_HOOKS.glob("*.json"))
-    assert adapters, "no adapter files found; the check would pass against nothing"
-    recorded = [
-        path for path in adapters
-        if "DECLINED" in path.read_text(encoding="utf-8", errors="replace")
-    ]
-    assert recorded, (
-        f"no adapter records the DECLINED session-start decision: {[p.name for p in adapters]}"
+    opencode = (_HOOKS / "adapters" / "opencode.py").read_text(encoding="utf-8")
+    assert "UnsupportedSessionContext" in opencode, (
+        "the OpenCode adapter does not refuse; an empty response reads as 'project is ready'"
     )
-    for path in recorded:
-        text = path.read_text(encoding="utf-8", errors="replace")
-        section = text[text.index("DECLINED"):][:800]
-        # The reason must be the duplication argument, not "we lacked time".
-        assert "second copy" in section or "duplicate" in section
-        assert "name and description" in section
+
+
+def test_the_reversal_is_recorded_where_a_future_reader_will_find_it() -> None:
+    """A reversed decision that is not written down gets re-reversed every few months.
+
+    The reason lives in the plugin, not in a host project's task file: a reader of a clone has no
+    ``tasks/`` directory, so it has to be next to the code it governs.
+    """
+    entry = (_HOOKS / "session-start").read_text(encoding="utf-8")
+    adapters = (_HOOKS / "adapters" / "cursor.py").read_text(encoding="utf-8")
+    for text in (entry, adapters):
+        assert "April 2026" in text or "2026" in text, "the vendor-bug date is not recorded"
+        assert "ETA" in text or "no ETA" in text, "the absence of a fix date is not recorded"
+    rule = (jrnl.SKILL_DIR / "references" / "project-rule.md").read_text(encoding="utf-8")
+    assert "main initialisation channel" in rule.lower(), (
+        "the rules file is not described as the primary channel, so the hook looks primary"
+    )
 
     """The behaviour rule that the gate's F5 defect taught: unknown is not "no".
 

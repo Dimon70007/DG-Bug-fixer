@@ -1,5 +1,18 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PROJECT_DIR}/.claude/skills/bug-fixer/hooks/session-start\" claude",
+            "timeout": 10,
+            "async": false
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "*",

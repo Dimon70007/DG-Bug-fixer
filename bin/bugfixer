@@ -25,6 +25,8 @@ if str(PLUGIN_ROOT / "lib") not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT / "lib"))
 
 from bugfixer import contract  # noqa: E402
+from bugfixer import readiness  # noqa: E402
+from bugfixer import rules  # noqa: E402
 
 EXIT_OK: Final[int] = 0
 EXIT_REFUSED: Final[int] = 2
@@ -33,72 +35,47 @@ EXIT_REFUSED: Final[int] = 2
 def _doctor(project: Path) -> int:
     """Check the project's contract and report what the gate would do with it.
 
+    The check itself lives in :mod:`bugfixer.readiness`, which the session-start hook also asks.
+    Two implementations of "is this project ready" would eventually answer differently, and the
+    agent would be told "you are fine" by one and refused by the other.
+
     Args:
         project: Project directory to inspect.
 
     Returns:
-        ``0`` when the contract is usable, ``2`` when it is missing or incomplete.
+        ``0`` when the contract's fields are usable, ``2`` when it is missing or incomplete.
     """
-    path = contract.find(project)
-    if path is None:
+    state = readiness.inspect(project)
+    if state.contract is None:
         print(
-            f"no {contract.CONTRACT_NAME} at or above {project.resolve()}. Phase 0 of the "
+            f"no {contract.CONTRACT_NAME} at or above {state.project.resolve()}. Phase 0 of the "
             "skill stops and asks for one; it does not guess a test command or a ledger path.",
             file=sys.stderr,
         )
         return EXIT_REFUSED
 
-    text = path.read_text(encoding="utf-8", errors="replace")
-    report = contract.check(text)
-    for warning in report.warnings:
+    for warning in state.warnings:
         print(f"warning: {warning}", file=sys.stderr)
-    if report.problems:
-        print(f"{path}: not usable", file=sys.stderr)
-        for problem in report.problems:
+    if state.problems:
+        print(f"{state.contract}: not usable", file=sys.stderr)
+        for problem in state.problems:
             print(f"  - {problem}", file=sys.stderr)
         return EXIT_REFUSED
 
-    print(f"{path}: ok")
-    print(f"  ledger pattern : {contract.ledger_pattern(text)}")
-    print(f"  test paths     : {', '.join(contract.test_paths(text))}")
+    print(f"{state.contract}: ok")
+    print(f"  ledger pattern : {state.ledger_pattern}")
+    print(f"  test paths     : {', '.join(state.test_paths)}")
     # The resolved ledger is reported because doctor and the gate used to disagree about it:
     # a contract could pass validation and still leave the gate with nothing to enforce.
-    resolved = _resolve_ledger(project)
-    if resolved is None:
-        print(
-            "  ledger         : not matched yet — no run is active, so the gate stays inert",
-        )
+    if state.ledger is not None:
+        print(f"  ledger         : {state.ledger}")
     else:
-        print(f"  ledger         : {resolved}")
+        print("  ledger         : not matched yet")
+        if state.ledger_problem:
+            # Not a failure: no run is under way until a task file exists. The reason is printed
+            # because the gate refuses every write until one does, and "ok" alone would hide that.
+            print(f"  {state.ledger_problem}", file=sys.stderr)
     return EXIT_OK
-
-
-def _resolve_ledger(project: Path) -> Path | None:
-    """Return the ledger the gate would bind to, without duplicating its rules.
-
-    The gate owns discovery, so it is imported rather than reimplemented: two copies of
-    "which file is the ledger" would drift, and the drift is invisible until a run is under
-    way and the guard is off.
-
-    Args:
-        project: Project directory.
-
-    Returns:
-        Ledger path, or ``None`` when no run can be identified.
-    """
-    hooks = PLUGIN_ROOT / "hooks"
-    if str(hooks) not in sys.path:
-        sys.path.insert(0, str(hooks))
-    import bugfixer_gate as gate  # noqa: PLC0415 — imported lazily: doctor is stdlib-cheap
-
-    try:
-        return gate.discover_ledger(project.resolve())
-    except gate.LedgerNotFoundError as exc:
-        # Reported as a problem rather than a traceback: doctor exists to tell a human what to
-        # fix, and a stack trace is the same information with the advice taken out.
-        print(f"  ledger         : not resolvable", file=sys.stderr)
-        print(f"  {exc}", file=sys.stderr)
-        return None
 
 
 def _init(project: Path, *, force: bool) -> int:
@@ -122,8 +99,14 @@ def _init(project: Path, *, force: bool) -> int:
         )
         return EXIT_REFUSED
 
-    target.write_text(contract.scaffold(project), encoding="utf-8")
+    contract.write_created(target, contract.scaffold(project))
     print(f"{target}: written")
+    # The rule is the main initialisation channel (§18.3), and `init` is what a plugin-only
+    # install has: a plugin from a marketplace never runs `install.py`. Writing it here is what
+    # keeps "the plugin tells the agent to check first" true without a hook.
+    for merged in rules.install(project):
+        if merged.action != "kept":
+            print(f"  {merged.path} ({merged.action}: project rule — the main init channel)")
     added = contract.ensure_gitignore(project)
     if added:
         print(f"  .gitignore: added {', '.join(added)} (the run journal is local history)")

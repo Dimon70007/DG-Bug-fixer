@@ -212,7 +212,7 @@ def test_the_changelog_is_refused_without_a_coverage_number(gate, project: Path)
     ledger = project
     ledger.write_text(
         ledger.read_text(encoding="utf-8")
-        + "\n### F9 — probe\n\n**Verdict.** CONFIRMED — the cause was X.\n",
+        + "\n### F9 — probe\n\n**Verdict.** CONFIRMED — the cause was X.\\n\\nФАКТ (GREEN): pytest -> 12 passed\\n",
         encoding="utf-8",
     )
     verdict = gate.decide(ledger=ledger, tool="write", args=_changelog_args(""))
@@ -225,7 +225,7 @@ def test_the_changelog_is_refused_below_the_threshold(gate, project: Path) -> No
     ledger = project
     ledger.write_text(
         ledger.read_text(encoding="utf-8")
-        + "\n### F9 — probe\n\n**Verdict.** CONFIRMED — the cause was X.\n",
+        + "\n### F9 — probe\n\n**Verdict.** CONFIRMED — the cause was X.\\n\\nФАКТ (GREEN): pytest -> 12 passed\\n",
         encoding="utf-8",
     )
     verdict = gate.decide(ledger=ledger, tool="write", args=_changelog_args("tested: 72%"))
@@ -239,7 +239,7 @@ def test_the_changelog_is_allowed_at_the_threshold(gate, project: Path) -> None:
     ledger = project
     ledger.write_text(
         ledger.read_text(encoding="utf-8")
-        + "\n### F9 — probe\n\n**Verdict.** CONFIRMED — the cause was X.\n",
+        + "\n### F9 — probe\n\n**Verdict.** CONFIRMED — the cause was X.\\n\\nФАКТ (GREEN): pytest -> 12 passed\\n",
         encoding="utf-8",
     )
     verdict = gate.decide(ledger=ledger, tool="write", args=_changelog_args("tested: 92%"))
@@ -255,7 +255,7 @@ def test_the_changelog_needs_a_way_to_verify_the_number(gate, tmp_path: Path) ->
     )
     ledger = tmp_path / "tasks" / "TASK-1.md"
     ledger.write_text(
-        "## Task\nfix\n\n**Verdict.** CONFIRMED — cause.\n", encoding="utf-8"
+        "## Task\nfix\n\n**Verdict.** CONFIRMED — cause.\\n\\nФАКТ (GREEN): pytest -> 12 passed\\n", encoding="utf-8"
     )
     jrnl.set_phase(ledger, 4)
     verdict = gate.decide(ledger=ledger, tool="write", args=_changelog_args("tested: 95%"))
@@ -397,10 +397,89 @@ def test_a_changelog_edit_without_content_is_refused(gate, project: Path) -> Non
     """An edit that does not carry the new text cannot be checked, so it is not assumed fine."""
     ledger = project
     ledger.write_text(
-        ledger.read_text(encoding="utf-8") + "\n**Verdict.** CONFIRMED — cause.\n",
+        ledger.read_text(encoding="utf-8") + "\n**Verdict.** CONFIRMED — cause.\\n\\nФАКТ (GREEN): pytest -> 12 passed\\n",
         encoding="utf-8",
     )
     verdict = gate.decide(ledger=ledger, tool="write", args={"file_path": "CHANGELOG.md"})
     assert not verdict.allow
     assert "does not carry the new text" in verdict.reason
+
+
+# --- the run has to be green in full, not 90% of it -------------------------
+
+
+def _with_green(gate, ledger: Path, green_line: str, extra: str = "") -> object:
+    """Append a verdict and one green marker, then ask to write the changelog."""
+    ledger.write_text(
+        ledger.read_text(encoding="utf-8")
+        + f"\n**Verdict.** CONFIRMED — cause.\n\n{green_line}\n{extra}",
+        encoding="utf-8",
+    )
+    return gate.decide(
+        ledger=ledger,
+        tool="write",
+        args={"file_path": "CHANGELOG.md", "content": "- fix\ntested: 95%\n"},
+    )
+
+
+def test_a_green_run_allows_the_entry(gate, project: Path) -> None:
+    """The positive case: every test passed, coverage above threshold."""
+    verdict = _with_green(gate, project, "ФАКТ (GREEN): pytest -> 12 passed")
+    assert verdict.allow, verdict.reason
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "ФАКТ (GREEN): pytest -> 3 failed, 9 passed",
+        "ФАКТ (GREEN): pytest -> 1 error",
+        "ФАКТ (GREEN): make test -> FAILED (2 failures)",
+        "ФАКТ (GREEN): npm test -> 12 passed, 1 failing",
+    ],
+)
+def test_a_partially_failing_run_is_not_green(gate, project: Path, line: str) -> None:
+    """§11a: the threshold is about coverage, not about the share of tests that passed.
+
+    A suite where 90% of tests pass is a failing suite. An entry written then would claim the
+    change works while the run says it does not.
+    """
+    verdict = _with_green(gate, project, line)
+    assert not verdict.allow
+    assert "every test has to pass" in verdict.reason.lower() or "failing" in verdict.reason.lower()
+
+
+def test_no_green_marker_at_all_is_refused(gate, project: Path) -> None:
+    """A verdict without a run is not evidence that the suite passes."""
+    verdict = _with_green(gate, project, "")
+    assert not verdict.allow
+    assert "ФАКТ (GREEN):" in verdict.reason
+
+
+def test_a_regression_after_the_green_run_is_refused(gate, project: Path) -> None:
+    """A green marker before a later regression describes a tree that no longer exists (§9)."""
+    verdict = _with_green(
+        gate,
+        project,
+        "ФАКТ (GREEN): pytest -> 12 passed",
+        extra="\nФАКТ (регрессия): test_baseline\n",
+    )
+    assert not verdict.allow
+    assert "регрессия" in verdict.reason
+
+
+def test_a_regression_before_the_green_run_does_not_block(gate, project: Path) -> None:
+    """Order decides: a regression already fixed by the green run is history."""
+    ledger = project
+    ledger.write_text(
+        ledger.read_text(encoding="utf-8")
+        + "\n**Verdict.** CONFIRMED — cause.\n\nФАКТ (регрессия): test_baseline\n"
+        "\nФАКТ (GREEN): pytest -> 12 passed\n",
+        encoding="utf-8",
+    )
+    verdict = gate.decide(
+        ledger=ledger,
+        tool="write",
+        args={"file_path": "CHANGELOG.md", "content": "- fix\ntested: 95%\n"},
+    )
+    assert verdict.allow, verdict.reason
 

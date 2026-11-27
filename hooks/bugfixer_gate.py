@@ -2104,6 +2104,11 @@ def _changelog_problem(args: dict[str, Any], ledger: Path) -> str:
             "entry says a change is finished, and there is no verdict in the task file yet. "
             "Finish phase 4, record `**Verdict.**`, then write the entry."
         )
+    # Two independent conditions (invariant 49). The threshold applies to *coverage*; the run
+    # itself has to be green in full — "90% of tests passed" is a failing suite, not a green one.
+    green_problem = _green_run_problem(text)
+    if green_problem:
+        return green_problem
     if not isinstance(content, str) or not content:
         # An edit that does not carry the new text cannot be checked; the gate says so rather
         # than assuming the entry is fine.
@@ -2131,6 +2136,54 @@ def _changelog_problem(args: dict[str, Any], ledger: Path) -> str:
         return (
             f"`tested: {reported}%` cannot be verified: the contract names no "
             "`Coverage command:`. Add one, or the number is a claim nobody checked (spec §0)."
+        )
+    return ""
+
+
+def _green_run_problem(text: str) -> str:
+    """Check that the last full-suite run was green in every test (invariant 49, §11a).
+
+    Two markers, both already written by the workflow (`ФАКТ (GREEN):` at step 4.7, and
+    `ФАКТ (регрессия):` at 4.8a), so this adds no new obligation to the agent — it only stops the
+    claim from being made when the evidence contradicts it.
+
+    The distinction that matters: the coverage threshold is a number about *lines*, and this is
+    about the run as a whole. A suite where 90% of tests pass is a failing suite, and a changelog
+    entry saying the change is done would be false.
+
+    Args:
+        text: Ledger contents.
+
+    Returns:
+        A refusal message, or an empty string when the last run was fully green.
+    """
+    green = [match for match in re.finditer(r"^.*ФАКТ \(GREEN\):.*$", text, re.MULTILINE)]
+    if not green:
+        return (
+            "`CHANGELOG.md` needs a green full-suite run first (spec §11a, §9): record "
+            "`ФАКТ (GREEN):` at step 4.7 with the command and its result. The entry claims the "
+            "change works, and no run proves it yet."
+        )
+    last = green[-1]
+    result = last.group(0)
+    failed = re.search(
+        r"\b(\d+\s+)?(failed|failure|failures|failing|error|errors)\b", result, re.IGNORECASE
+    )
+    if failed:
+        return (
+            "the last `ФАКТ (GREEN):` records a failing or erroring run ("
+            f"`{result.strip()[:120]}`). Every test has to pass before a changelog entry: the "
+            "90% threshold is about *coverage of changed lines*, not about the share of tests "
+            "that passed. Fix the suite, then record the new run."
+        )
+    # A regression recorded after the green run means the baseline broke later: the green marker
+    # is then stale evidence about a tree that no longer exists.
+    after = text[last.end() :]
+    if re.search(r"^.*ФАКТ \(регрессия\):.*$", after, re.MULTILINE):
+        return (
+            "a `ФАКТ (регрессия):` was recorded after the last green run, so the baseline broke "
+            "and that green marker describes a tree that no longer exists (spec §9: no "
+            "baseline-green test may fail). Fix the regression and run the full suite again."
         )
     return ""
 

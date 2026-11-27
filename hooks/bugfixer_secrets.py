@@ -6,11 +6,13 @@ in ``SKILL.md`` (before the line is written), the agent's own diff scan (step
 4.6a), and this gate scan (on every read of a record). Together they catch the
 same secret at three different moments.
 
-**Two levels, and the split is not cosmetic.** A value after ``password=`` is a
-leak. ``password_present=true`` is the *fact* of presence, which the rule forbids
-too — but ``cache_present=true`` is an ordinary flag. Warning on both would make
-the gate block harmless code, and a gate that blocks harmless code is removed in
-its first week, taking the real checks with it.
+**One level: every pattern refuses.** A value after ``password=`` is a leak, and so is anything
+derived from it that narrows a search or lets a guess be checked offline — the length, the size,
+the hash, the prefix. The old design had a second, advisory level for the *fact* of presence; it
+was removed on 2026-11-27 because the fact of setup is not a leak at all (the operator has to be
+able to read "the key is set"), and warning about it made the one allowed report look suspicious.
+The fact of setup is now allowed outright, by name, in :data:`SETUP_VALUES` and
+:data:`SETUP_NAME_PARTS`.
 
 Command line, for the agent's own pre-commit pass:
 
@@ -31,12 +33,15 @@ from typing import Final
 EXIT_CLEAN: Final[int] = 0
 EXIT_SECRET: Final[int] = 2
 
-#: Patterns that refuse: an actual value is present. Kept as strings so a test can
-#: check each one independently and name the rule that fired.
+#: Patterns that refuse. Kept as strings so a test can check each one independently and name the
+#: rule that fired.
 #:
-#: Order matters: the specific shapes come first, because the generic assignment
-#: pattern would otherwise swallow a `Bearer …` header as a name/value pair and the
-#: refusal would name the wrong rule.
+#: Order matters twice:
+#:
+#: 1. `derived` before `assignment`, because the generic pattern cannot match `api_key_len=51` at
+#:    all: `_` is a word character, so `\b` finds no boundary between `key` and `_len`;
+#: 2. the concrete shapes (`sk-`, `ghp_`, …) before both, because `assignment` would otherwise
+#:    swallow a `Bearer …` header as a name/value pair and the refusal would name the wrong rule.
 SECRET_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
     ("openai", r"\bsk-[A-Za-z0-9_-]{16,}"),
     ("github", r"\bghp_[A-Za-z0-9]{20,}"),
@@ -45,6 +50,16 @@ SECRET_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
     # a trailing dot, so a real token never matched it.
     ("jwt", r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
     ("bearer", r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{12,}"),
+    # Anything derived from the value. Spec §10 (changed 2026-11-27): a length narrows a
+    # brute-force search, a hash is checkable offline, a prefix names the key's format — none of
+    # them is needed to answer "is it configured", which is the only thing that may be reported.
+    (
+        "derived",
+        r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|"
+        r"private[_-]?key|client[_-]?secret|authorization)[_-]?"
+        r"(len|length|size|bytes|sha1|sha256|sha512|md5|hash|digest|prefix|suffix)"
+        r"\s*[:=]\s*\S+",
+    ),
     (
         "assignment",
         r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|"
@@ -53,19 +68,10 @@ SECRET_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
     ("base64", r"\b[A-Za-z0-9+/]{40,}={0,2}\b"),
 )
 
-#: Pattern that only warns: it catches the fact of presence, and the fact of
-#: presence is usually a flag rather than a secret. ``password_present=true`` and
-#: ``password_present=false`` are both facts; only the value is a leak.
-ADVISORY_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
-    (
-        "presence",
-        r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|key|credential)s?"
-        r"[_-]?(present|exists|found)\s*[:=]\s*(true|false|yes|no)\b",
-    ),
-)
-
-#: Value shapes that are not secrets even when they follow a secret-looking name.
-_NON_SECRET_VALUES: Final[frozenset[str]] = frozenset(
+#: Value shapes that are not secrets even when they follow a secret-looking name: they report the
+#: fact of setup (or its absence), which §10 allows and requires. `configured` heads the list
+#: because it is the form the skill teaches.
+SETUP_VALUES: Final[frozenset[str]] = frozenset(
     {
         "",
         "none",
@@ -81,7 +87,35 @@ _NON_SECRET_VALUES: Final[frozenset[str]] = frozenset(
         "str",
         "int",
         "bool",
+        "configured",
+        "unconfigured",
+        "not-configured",
+        "set",
+        "unset",
+        "enabled",
+        "disabled",
+        "present",
+        "absent",
+        "found",
+        "missing",
+        "yes",
+        "no",
+        "ok",
     }
+)
+
+#: Name fragments that mark a field as reporting setup rather than carrying a value. The fact may
+#: be spelled in the name (`api_key_configured=yes`) instead of the value (`api_key: configured`),
+#: and both are the same statement.
+SETUP_NAME_PARTS: Final[tuple[str, ...]] = (
+    "configured",
+    "unconfigured",
+    "present",
+    "exists",
+    "found",
+    "enabled",
+    "defined",
+    "missing",
 )
 
 _REDACT_HEAD: Final[int] = 4
@@ -95,13 +129,11 @@ class Finding:
         line_no: 1-based line number.
         rule: Pattern name, so a refusal says which rule fired.
         excerpt: The line with the value masked.
-        advice_only: ``True`` for the advisory level.
     """
 
     line_no: int
     rule: str
     excerpt: str
-    advice_only: bool
 
 
 def _mask_value(text: str) -> str:
@@ -126,64 +158,63 @@ def _mask_value(text: str) -> str:
     return text[: match.start(1)] + value[:_REDACT_HEAD] + "***"
 
 
-def _is_secret_assignment(line: str) -> bool:
-    """Whether an assignment-shaped match carries a real value.
+def _is_setup_report(matched: str) -> bool:
+    """Whether the matched assignment reports *whether* a secret is configured.
 
-    ``password: ${PASS}`` and ``token: null`` are configuration, not leaks.
+    Three spellings of the same statement, and all are allowed (§10):
+
+    * the value says it — ``api_key: configured``;
+    * the value says it with a flag — ``api_key: configured=false``, ``password_present=true``;
+    * the name says it — ``api_key_configured=yes``.
+
+    The check reads the **matched** assignment, not the first one on the line: a log line is
+    `[DEBUG] provider=openai api_key: configured`, and looking at the leftmost `=` would judge
+    `openai` — a provider name — as if it were the secret's value.
 
     Args:
-        line: Line containing the match.
+        matched: The text the pattern matched, e.g. ``api_key: configured``.
 
     Returns:
-        ``True`` when the value looks like a secret.
+        ``True`` when the assignment reports setup rather than carrying a value.
     """
-    match = re.search(r"[:=]\s*(\S+)", line)
-    if match is None:
+    separator = re.search(r"[:=]", matched)
+    if separator is None:
         return False
-    value = match.group(1).strip().strip("\"'`,;")
-    if value.lower() in _NON_SECRET_VALUES:
-        return False
+    name = matched[: separator.start()]
+    value = matched[separator.end() :].strip().strip("\"'`,;")
+    # `configured=false` is the word plus a flag: the flag carries the answer, not the secret.
+    head = value.split("=", 1)[0].strip()
+    if value.lower() in SETUP_VALUES or head.lower() in SETUP_VALUES:
+        return True
     if value.startswith(("$", "{", "%", "<")):
-        return False
-    return True
+        return True
+    lowered = name.lower()
+    return any(part in lowered for part in SETUP_NAME_PARTS)
 
 
 def scan(text: str) -> list[Finding]:
     """Scan text for secret patterns.
 
+    Every pattern refuses — there is no advisory level (§10, 2026-11-27). A match is skipped only
+    when the assignment turns out to report setup, which is the one statement §10 requires.
+
     Args:
         text: Content to scan.
 
     Returns:
-        Findings in file order, refusals and advisories together.
+        Findings in file order.
     """
     findings: list[Finding] = []
     for index, line in enumerate(text.splitlines(), start=1):
         for name, pattern in SECRET_PATTERNS:
-            if not re.search(pattern, line):
+            match = re.search(pattern, line)
+            if match is None:
                 continue
-            if name == "assignment" and not _is_secret_assignment(line):
+            if name in {"assignment", "derived"} and _is_setup_report(match.group(0)):
                 continue
-            findings.append(Finding(index, name, _mask_value(line), advice_only=False))
+            findings.append(Finding(index, name, _mask_value(line)))
             break
-        else:
-            for name, pattern in ADVISORY_PATTERNS:
-                if re.search(pattern, line):
-                    findings.append(Finding(index, name, line, advice_only=True))
-                    break
     return findings
-
-
-def blocking(findings: list[Finding]) -> list[Finding]:
-    """Filter to the findings that must refuse.
-
-    Args:
-        findings: Findings from :func:`scan`.
-
-    Returns:
-        Findings that are not advisory.
-    """
-    return [finding for finding in findings if not finding.advice_only]
 
 
 def describe(finding: Finding) -> str:
@@ -243,12 +274,9 @@ def main(argv: list[str] | None = None) -> int:
         text = path.read_text(encoding="utf-8", errors="replace")
 
     findings = scan(text)
-    for finding in blocking(findings):
-        print(describe(finding), file=sys.stderr)
     for finding in findings:
-        if finding.advice_only:
-            print(f"warning: {describe(finding)}", file=sys.stderr)
-    return EXIT_SECRET if blocking(findings) else EXIT_CLEAN
+        print(describe(finding), file=sys.stderr)
+    return EXIT_SECRET if findings else EXIT_CLEAN
 
 
 if __name__ == "__main__":

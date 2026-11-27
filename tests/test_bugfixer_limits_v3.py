@@ -3,7 +3,7 @@
 Three rules live here, and each exists because its absence produced a specific
 defect in 2.1:
 
-* **No hashing.** Debugging is research: the agent mis-writes a record, refines a
+* **No hashing of the ledger.** Debugging is research: the agent mis-writes a record, refines a
   formulation, re-reads an early conclusion. A mechanism that blocks fixing your
   own typo protects nothing and gets disabled. What remains is a *warning* when
   the ``## Task`` block changes, because fixing a different bug is a different
@@ -12,9 +12,11 @@ defect in 2.1:
   line is then obvious, and an attempt count nobody can trust makes every cap
   decorative. ``Recheck`` is per hypothesis and does not touch ``A`` — repairing
   the test is repairing the instrument.
-* **Secrets have two levels.** A value is a leak; the *fact* of presence is
-  usually a flag. Warning on both would block harmless code and get the gate
-  removed.
+* **Secrets have one level.** A value is a leak, and so is anything derived from it — length,
+  hash, size, prefix — because those narrow or verify a brute-force search. The *fact* of setup
+  (`api_key: configured`) is not a leak: it is the only thing §10 lets an agent report, and the
+  operator needs it. The old advisory level was removed on 2026-11-27 (see
+  `test_bugfixer_secrets_derived_v3.py`).
 """
 
 from __future__ import annotations
@@ -213,16 +215,19 @@ def test_operator_reset_restarts_the_numbering(gate) -> None:
 )
 def test_each_refusal_pattern_fires(secrets_module, text: str, rule: str) -> None:
     """Every refusal pattern needs its own proof: one test for the group proves one regex."""
-    findings = secrets_module.blocking(secrets_module.scan(text))
+    findings = secrets_module.scan(text)
     assert findings, f"no finding for {text!r}"
     assert findings[0].rule == rule
 
 
-def test_fact_of_presence_only_warns(secrets_module) -> None:
-    """``password_present=true`` is forbidden by the rule, but it is not a value."""
-    findings = secrets_module.scan("password_present=true")
-    assert findings and findings[0].advice_only
-    assert secrets_module.blocking(findings) == []
+def test_a_fact_of_setup_is_allowed(secrets_module) -> None:
+    """`password_present=true` reports setup, which §10 requires an agent to be able to say.
+
+    Before 2026-11-27 this was a *warning*: the operator was told "suspicious" about the one
+    statement the spec needs, while `api_key: configured` — the same fact in other words — was
+    refused outright. The advisory level is gone; see `test_bugfixer_secrets_derived_v3.py`.
+    """
+    assert secrets_module.scan("password_present=true") == []
 
 
 def test_harmless_flag_is_not_even_a_warning(secrets_module) -> None:
@@ -233,7 +238,7 @@ def test_harmless_flag_is_not_even_a_warning(secrets_module) -> None:
 
 def test_the_refusal_does_not_repeat_the_secret(secrets_module) -> None:
     """A message that quotes the value is a second copy of it, in an issue tracker."""
-    findings = secrets_module.blocking(secrets_module.scan("api_key=supersecretvalue123"))
+    findings = secrets_module.scan("api_key=supersecretvalue123")
     assert findings
     assert "supersecretvalue123" not in secrets_module.describe(findings[0])
     assert "***" in secrets_module.describe(findings[0])
@@ -241,12 +246,12 @@ def test_the_refusal_does_not_repeat_the_secret(secrets_module) -> None:
 
 def test_an_env_var_reference_is_not_a_secret(secrets_module) -> None:
     """``password: ${DB_PASSWORD}`` is configuration, not a leak."""
-    assert secrets_module.blocking(secrets_module.scan('password: "${DB_PASSWORD}"')) == []
+    assert secrets_module.scan('password: "${DB_PASSWORD}"') == []
 
 
 def test_a_null_value_is_not_a_secret(secrets_module) -> None:
     """``token: null`` says there is no token."""
-    assert secrets_module.blocking(secrets_module.scan("token: null")) == []
+    assert secrets_module.scan("token: null") == []
 
 
 def test_record_with_a_secret_is_denied(gate, tmp_path: Path) -> None:
@@ -266,7 +271,20 @@ def test_record_with_a_secret_is_denied(gate, tmp_path: Path) -> None:
 
 
 def test_clean_record_is_allowed(gate, tmp_path: Path) -> None:
-    """The scanner must not block ordinary log lines."""
+    """The scanner must not block ordinary log lines that report setup."""
+    (tmp_path / "bug-fixer.project.md").write_text("Test paths: tests/\n", encoding="utf-8")
+    ledger = tmp_path / "T.md"
+    ledger.write_text(
+        "## Task\nfix\n\n### F1 — research\n"
+        "| Kind | research |\n"
+        "[DEBUG] api_key: configured provider configured=yes\n",
+        encoding="utf-8",
+    )
+    assert gate.decide(ledger=ledger, tool="write", args={"file_path": "tests/a.py"}).allow
+
+
+def test_a_record_reporting_a_key_length_is_denied(gate, tmp_path: Path) -> None:
+    """The same record with a length instead of the fact: a length helps to recover the value."""
     (tmp_path / "bug-fixer.project.md").write_text("Test paths: tests/\n", encoding="utf-8")
     ledger = tmp_path / "T.md"
     ledger.write_text(
@@ -275,7 +293,9 @@ def test_clean_record_is_allowed(gate, tmp_path: Path) -> None:
         "[DEBUG] api_key_len=51 provider configured=yes\n",
         encoding="utf-8",
     )
-    assert gate.decide(ledger=ledger, tool="write", args={"file_path": "tests/a.py"}).allow
+    verdict = gate.decide(ledger=ledger, tool="write", args={"file_path": "tests/a.py"})
+    assert not verdict.allow
+    assert "derived" in verdict.reason
 
 
 def test_cli_reports_a_secret_in_a_file(tmp_path: Path) -> None:
@@ -295,7 +315,7 @@ def test_cli_reports_a_secret_in_a_file(tmp_path: Path) -> None:
 def test_cli_returns_zero_on_a_clean_file(tmp_path: Path) -> None:
     """Exit 0 is what the agent's own pre-commit pass keys on."""
     path = tmp_path / "clean.txt"
-    path.write_text("api_key_len=51\n", encoding="utf-8")
+    path.write_text("api_key: configured\n", encoding="utf-8")
     result = subprocess.run(
         [sys.executable, str(_SECRETS), "--text", str(path)],
         text=True,

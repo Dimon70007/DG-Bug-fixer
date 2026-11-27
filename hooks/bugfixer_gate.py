@@ -1324,10 +1324,11 @@ def scan_records(text: str) -> list[str]:
     """
     problems: list[str] = []
     for record in parse_records(text):
-        for finding in secrets.blocking(secrets.scan(record.body)):
+        for finding in secrets.scan(record.body):
             problems.append(
-                f"secret in `{record.id}` at {secrets.describe(finding)}. Remove the value: "
-                "log its length, type or hash instead, and never the value itself."
+                f"secret in `{record.id}` at {secrets.describe(finding)}. Remove it: report "
+                "only whether the secret is configured (`api_key: configured`). Its value, "
+                "length, hash and prefix all help to recover it and are refused too (§10)."
             )
     return problems
 

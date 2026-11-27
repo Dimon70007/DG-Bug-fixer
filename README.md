@@ -351,7 +351,7 @@ ordered, or matches nothing, the gate stays inert rather than attaching the run 
 ### Verifying the install
 
 ```bash
-python3 hooks/verify_harnesses.py
+bugfixer hooks
 ```
 
 It runs the gate against a synthetic deny first, then reports one row per harness:
@@ -654,14 +654,15 @@ otherwise would be false.
 `A` is counted from the `Attempt <k> consumed` lines, after the last operator reset. A hook
 sees tool calls, not loops, so the ledger is the only honest source. The phase cannot be
 inferred at all, so it is read from the run journal — one appended record per event, written
-by the state CLI and never by the agent (spec §5.4, invariants 32–36):
+by the state CLI and never by the agent (spec §5.4, invariants 32–36). `bugfixer state` is that
+CLI; it takes the ledger first and the field second:
 
 ```bash
-python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md           # phase, status, hypothesis
-python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md edges     # the eight names
-python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md advance 2 --evidence "RED + baseline + 3Q"
-python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md advance 3 --edge DEEPEN_SAME --evidence "delta 7->2"
-python3 hooks/bugfixer_gate_state.py tasks/TASK-123.md status BLOCKED
+bugfixer state tasks/TASK-123.md           # phase, status, hypothesis
+bugfixer state tasks/TASK-123.md edges     # the eight names
+bugfixer state tasks/TASK-123.md advance 2 --evidence "RED + baseline + 3Q"
+bugfixer state tasks/TASK-123.md advance 3 --edge DEEPEN_SAME --evidence "delta 7->2"
+bugfixer state tasks/TASK-123.md status BLOCKED
 ```
 
 The journal is `tasks/TASK-123.md.bugfixer.jsonl`, beside the task file and outside git
@@ -671,6 +672,29 @@ number for an agent to edit, which is what the old `.bugfixer.json` sidecar allo
 
 A phase pair with two meanings (`4→3`) **requires** `--edge`: the gate refuses to guess which
 one you meant, because they differ in verdict, proof and what happens next.
+
+### Turning the gate off
+
+Two exits, for two different situations. Pick by **what you are editing**, not by what is
+shorter to type.
+
+| Situation | How | What stays in force |
+|---|---|---|
+| Developing the plugin itself, with its own gate installed in that repository | `--dev-plugin` on the gate (`bugfixer gate --dev-plugin`, or the flag in the hook command) | everything else: project-code edits, caps, statuses, secrets |
+| The ledger is a **tooling task** (refactor, build script), not a bug-fix run | a `Phase gate: off` line, on its own line, in the task file | everything else, including terminal statuses and caps |
+
+**`Phase gate: off` does not disable the gate.** It removes exactly one rule — "phases 0–3 and 5
+may not edit production code". Terminal statuses, the attempt cap, the journal, the secret scan and
+the project boundary still apply (`test_the_switch_does_not_disable_the_gate` and its neighbours).
+The line has to be a whole line: prose that *mentions* the switch does not trip it, because markers
+are read from the start of a line. Case does not matter.
+
+**What the switch does not fix.** A defect in the gate itself — an unknown tool name, a broken
+contract — is not a phase, so the switch does not repair it: the gate refuses with the switch on
+too. That needs a fix to the gate, done with `--dev-plugin`, or removal of the hook.
+
+**A hook that stays stuck after removal.** Delete the entry from `.cursor/hooks.json` and reload
+the window: hook configuration is read when a window opens, not when a chat starts.
 
 ### Not enforced
 

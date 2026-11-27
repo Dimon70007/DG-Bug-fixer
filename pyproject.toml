@@ -38,7 +38,12 @@ ignore = ["E501"]
 # processes report their own coverage, so a changed-line number means what §11a says it means.
 patch = ["subprocess"]
 parallel = true
-source = ["hooks", "lib"]
+# `bin/bugfixer` has no `.py` suffix, so a `source` listing alone never measures it — and it is
+# the file every verb passes through. §11a counts changed lines, so leaving it out made the
+# reported number describe everything except the change. `scripts/` holds the measurer itself,
+# which is code like any other: it has tests, so it gets measured.
+source = ["hooks", "lib", "bin", "scripts"]
+include = ["bin/bugfixer"]
 
 [tool.coverage.report]
-omit = ["tests/*"]
+omit = ["tests/*", "logs/*"]

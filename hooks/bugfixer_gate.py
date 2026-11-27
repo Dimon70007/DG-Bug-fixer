@@ -50,6 +50,21 @@ from bugfixer import contract as contract_module  # noqa: E402
 EXIT_ALLOW: Final[int] = 0
 EXIT_DENY: Final[int] = 2
 
+
+def _cli_path() -> str:
+    """Absolute path of the plugin's single entry point.
+
+    Refusals name the command the agent should run next, and the agent's working directory is the
+    project — so a bare `bugfixer` is only correct when the plugin's `bin/` happens to be on
+    `PATH`, which a plugin install does not guarantee. The path is derived from this file, not from
+    the environment, so the same message is right on every machine.
+
+    Returns:
+        Absolute path to ``bin/bugfixer`` inside this plugin tree.
+    """
+    return str(Path(__file__).resolve().parents[1] / "bin" / "bugfixer")
+
+
 #: Probes that reached a code change (``Attempt <k> consumed``).
 MAX_ATTEMPTS: Final[int] = 10
 
@@ -1590,7 +1605,7 @@ def _decide(
         return _deny(
             f"the run journal {journal.journal_path(ledger).name} is written by the gate, not "
             "by the agent (spec §5.4, invariant 33). Every state change goes through the state "
-            "CLI, which appends one record: `bugfixer_gate_state.py <ledger> advance <phase> "
+            f"CLI, which appends one record: `{_cli_path()} state <ledger> advance <phase> "
             "--evidence <why>`. Findings belong in the task file, not in the journal."
         )
 
@@ -1675,7 +1690,7 @@ def _decide(
         return _deny(
             f"Phase {phase} forbids production-code changes: only Phase 4 (probe) may edit "
             "code, and only as a probe of a named hypothesis. Phases 1-3 collect evidence; "
-            "Phase 5 judges it. Run `bugfixer_gate_state.py <ledger> advance 4 --edge "
+            f"Phase 5 judges it. Run `{_cli_path()} state <ledger> advance 4 --edge "
             "FIRST_GUESS --evidence \"H0 created\"` (or HYPOTHESIS_READY) once the "
             "preconditions are written."
         )
@@ -2257,6 +2272,11 @@ def _is_code_write(detail: str, ledger: Path, tool: str, *, dev_plugin: bool = F
     for target in targets:
         normalized = target.replace("\\", "/")
         if _addresses_ledger(target, ledger):
+            continue
+        # Invariant 47 names the tree, not the tool that edits it: a shell write whose every
+        # target is the plugin is the same act as a `Write` to it. Checked per target because a
+        # command line is not a path, so a marker search over the whole string never matched.
+        if _is_plugin_file(target, root, dev_plugin=dev_plugin):
             continue
         if any(normalized.startswith(prefix) or f"/{prefix}" in normalized for prefix in tests):
             continue

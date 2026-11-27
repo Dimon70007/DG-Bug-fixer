@@ -25,6 +25,13 @@ from typing import Final
 #: Coverage's report, written inside the plugin directory: never `/tmp` (invariant 43).
 REPORT_FILE: Final[str] = "logs/coverage.json"
 
+#: Extensions `coverage.py` can measure at all. A file outside this set is not *untested* — it is
+#: invisible to the tool, and counting its changed lines in the denominator reports a change as
+#: uncovered for having a shell wrapper in it. The distinction matters in both directions:
+#: `bin/bugfixer` has no suffix and no record until `source` names it, and that absence is a real
+#: miss; `hooks/run-gate.sh` can never have a record, and that absence is not a failure.
+MEASURABLE_SUFFIXES: Final[tuple[str, ...]] = (".py", ".pyi")
+
 
 def _changed_lines(base: str, paths: list[str]) -> dict[str, set[int]]:
     """Lines added or modified relative to a git revision.
@@ -106,18 +113,28 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     total = covered = 0
+    skipped: list[str] = []
     for name, lines in changed.items():
         hit = executed.get(name)
         live = executable.get(name)
+        if (hit is None or live is None) and not name.endswith(MEASURABLE_SUFFIXES):
+            # Not a miss: `coverage.py` never reports a shell script, so the file has no record by
+            # construction. Named rather than dropped, because a silently shrinking denominator is
+            # how a number stops meaning what it says.
+            skipped.append(f"  {name}: cannot measure (not a Python file; {len(lines)} changed lines)")
+            continue
         if hit is None or live is None:
-            # A changed file with no coverage record is untested, not skipped: counting it as
-            # covered would inflate the number in the one place that decides a release.
+            # A changed Python file with no coverage record is untested, not skipped: counting it
+            # as covered would inflate the number in the one place that decides a release.
             total += len(lines)
             print(f"  {name}: no coverage data ({len(lines)} changed lines)", file=sys.stderr)
             continue
         measurable = lines & live
         total += len(measurable)
         covered += len(measurable & hit)
+
+    for note in skipped:
+        print(note, file=sys.stderr)
 
     if total == 0:
         print("changed lines could not be matched to coverage data", file=sys.stderr)

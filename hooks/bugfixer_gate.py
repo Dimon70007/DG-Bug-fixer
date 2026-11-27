@@ -37,6 +37,15 @@ if str(_HERE) not in sys.path:
 import bugfixer_journal as journal
 import bugfixer_secrets as secrets
 
+# The contract schema lives in ``lib/``, one level up from this module. The gate is executed by
+# path from a harness, so ``lib`` has to be importable explicitly; reading the marker's meaning
+# from the same module that writes it is what keeps the two in step.
+_LIB = _HERE.parent / "lib"
+if str(_LIB) not in sys.path:
+    sys.path.insert(0, str(_LIB))
+
+from bugfixer import contract as contract_module  # noqa: E402
+
 #: Exit codes shared with every adapter.
 EXIT_ALLOW: Final[int] = 0
 EXIT_DENY: Final[int] = 2
@@ -1925,17 +1934,23 @@ def _matches_ledger_pattern(path: Path, pattern: str) -> bool:
 
 
 def _contract_placeholders(root: Path) -> list[str]:
-    """Problems in the contract's *content*: fields that are still template placeholders.
+    """Problems in the contract's *content*, not in finding its ledger.
 
-    A contract can be found and still be unusable: every required field present, every value
-    ``<e.g. …>``. The gate would then enforce rules the agent cannot follow, so this counts as
-    no contract at all, with the same advice.
+    Two kinds, and both mean the contract cannot be followed as written:
+
+    * a required field is still a ``<…>`` placeholder — the agent would be obeying a template;
+    * the contract was never verified — its values were derived from the filesystem, so the test
+      command may not exist and the search tools may not be callable. Phase 1 would then record a
+      baseline from a command that fails to start.
+
+    A contract written before the marker existed counts as unverified: assuming its absence means
+    "trusted" is a guess, and §0 forbids guesses.
 
     Args:
         root: Project directory.
 
     Returns:
-        Refusal messages, empty when the contract is complete.
+        Refusal messages, empty when the contract is complete and confirmed.
     """
     contract = _find_contract(root)
     if contract is None:
@@ -1953,6 +1968,33 @@ def _contract_placeholders(root: Path) -> list[str]:
                 f"`{name}:` in {contract.name} is still a template placeholder "
                 f"({match.group(1).strip()}). "
             )
+    if problems:
+        return problems
+
+    verified = contract_module.verified_by(text)
+    if not contract_module.is_verified(text):
+        state = "missing" if not verified else f"`{verified}`"
+        return [
+            f"{contract.name} has not been verified: `Contract verified by:` is {state}. Its "
+            "values were derived from the filesystem, so nobody has run the test command or "
+            "checked that the search tools exist. Follow `references/init.md` — run the command, "
+            "confirm the tool names — then replace that line with who confirmed it and when. "
+        ]
+
+    if not contract_module.has_suite(text):
+        # The contract is valid and confirmed, but the project has no suite. §1 needs a baseline
+        # and §6 makes the command mandatory, so this stops the run while the user can still
+        # choose — after a failing test is written, the same discovery costs an attempt.
+        return [
+            "`Full suite:` is `none`: this project has no full test suite, so a run cannot record "
+            "a baseline (step 1.4) or compare before and after (step 4.7). Configure the suite "
+            "and verify the contract again. Tell the user, and offer these three options, best "
+            "first: (1) add a test suite — propose three concrete options for this project "
+            "(framework, first test, command) before they choose; (2) if a suite exists under a "
+            "command `bugfixer init` could not detect, put it in `Full suite:` and run it once; "
+            "(3) if a suite cannot be added now, do not use this plugin for this bug — a run "
+            "without a baseline cannot prove it fixed anything. "
+        ]
     return problems
 
 
@@ -2041,7 +2083,9 @@ def main(argv: list[str] | None = None) -> int:
         if _unblocks_setup(tool, tool_args, _project_root(event)):
             _emit(Verdict(allow=True))
             return EXIT_ALLOW
-        _fail_closed(contract_problems[0] + " Fill it in, then run `bugfixer doctor`.")
+        # The message already ends with what to do; appending a generic "fill it in" would fit
+        # placeholders and mislead here, where the field is filled and the project is the problem.
+        _fail_closed(contract_problems[0].rstrip())
     verdict = decide(ledger=ledger, tool=tool, args=tool_args)
     _emit(verdict)
     return EXIT_ALLOW if verdict.allow else EXIT_DENY

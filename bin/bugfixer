@@ -124,16 +124,27 @@ def _init(project: Path, *, force: bool) -> int:
 
     target.write_text(contract.scaffold(project), encoding="utf-8")
     print(f"{target}: written")
+    added = contract.ensure_gitignore(project)
+    if added:
+        print(f"  .gitignore: added {', '.join(added)} (the run journal is local history)")
     remaining = contract.problems(target.read_text(encoding="utf-8"))
     if remaining:
         print(f"  {len(remaining)} field(s) still need a value:", file=sys.stderr)
         for problem in remaining:
             print(f"    - {problem}", file=sys.stderr)
+    pattern = contract.ledger_pattern(target.read_text(encoding="utf-8"))
+    if pattern and not list(project.glob(pattern)):
         print(
-            "  Fill them in, then run `bugfixer doctor` until it exits 0 — the gate refuses "
-            "work until then.",
+            f"  note: `{pattern}` matches no file yet. Until one exists the gate cannot find a "
+            "ledger and refuses work, so create the task file for this bug first.",
             file=sys.stderr,
         )
+    print("  Confirm these against your own runtime before trusting them:")
+    for item in contract.AGENT_CONFIRMS:
+        print(f"    - {item}")
+    print(
+        "  Then run `bugfixer doctor` until it exits 0 — the gate refuses work until then."
+    )
     return EXIT_OK
 
 

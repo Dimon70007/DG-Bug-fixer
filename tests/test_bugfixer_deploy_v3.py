@@ -81,7 +81,8 @@ def project(tmp_path: Path) -> Path:
     tasks = tmp_path / "tasks"
     tasks.mkdir()
     (tmp_path / "bug-fixer.project.md").write_text(
-        "# contract\n\n## Ledger\n\n- Task/bug file: tasks/TASK-*.md\nTest paths: tests\n",
+        "# contract\n\n## Ledger\n\n- Task/bug file: tasks/TASK-*.md\nTest paths: tests\n"
+        "Full suite: make test\nContract verified by: agent 2026-11-27 — confirmed\n",
         encoding="utf-8",
     )
     (tasks / "TASK-100.md").write_text(LEDGER, encoding="utf-8")

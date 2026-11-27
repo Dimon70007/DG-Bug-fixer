@@ -213,7 +213,7 @@ def test_absent_and_incomplete_contracts_are_both_refused_with_their_own_advice(
     ("name", "payload"),
     [
         ("unknown tool", {"tool_name": "frobnicate", "tool_input": {"file_path": "src/x.py"}}),
-        ("unreadable shell", {"tool_name": "Bash", "tool_input": {"weird": "rm -rf src"}}),
+        ("unreadable shell", {"tool_name": "Bash", "tool_input": {"weird": "touch src"}}),
         ("corrupt payload", None),
     ],
 )

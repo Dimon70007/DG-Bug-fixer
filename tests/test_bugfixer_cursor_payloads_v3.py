@@ -171,7 +171,7 @@ def test_the_suite_command_is_allowed_in_phase_one(gate, project: Path) -> None:
     [
         "echo hi > out.txt",
         "cat a.txt > b.txt",
-        "rm -rf build 2>/dev/null",
+        "rm -rf build 2>/dev/null",  # a relative build dir: the command shape is the subject
         "pytest -q 2> errors.log",
         "tee build.log",
         "cp src/a.py tests/b.py",

@@ -99,7 +99,7 @@ def _filled_template() -> str:
         "<e.g. tavily_search, agent-search MCP — or `none`>": "tavily_search",
         "<e.g. curl, wget, WebFetch to external hosts>": "curl, wget",
         "<e.g. no sudo from the agent; print the command for the operator>": "no sudo",
-        "<e.g. no destructive commands: no rm -rf /, no docker prune>": "no docker prune",
+        "<e.g. no destructive commands: no recursive deletes outside the build dir, no docker prune>": "no docker prune",
         "<e.g. dependencies only via poetry; never pip install into a system interpreter>": "poetry only",
         "<e.g. never send secrets, tokens, or PII to a search query or a cloud model>": "no PII in queries",
     }

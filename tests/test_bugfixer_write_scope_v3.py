@@ -263,6 +263,149 @@ def test_the_changelog_needs_a_way_to_verify_the_number(gate, tmp_path: Path) ->
     assert "Coverage command" in verdict.reason
 
 
+# --- §11a: a docs-only change has nothing to measure ------------------------
+
+
+def _with_verdict_and_green(ledger: Path) -> None:
+    """Append the verdict and green marker the changelog requires, leaving the ledger usable."""
+    for name in ("docs/bug-fixer-v3-spec.md", "README.md"):
+        (ledger.parent.parent / name).write_text("# doc\n", encoding="utf-8")
+    ledger.write_text(
+        ledger.read_text(encoding="utf-8")
+        + "\n### F9 — probe\n\n**Verdict.** CONFIRMED — the cause was X.\\n\\n"
+        "ФАКТ (GREEN): pytest -> 12 passed\\n",
+        encoding="utf-8",
+    )
+
+
+def _docs_args(line: str) -> dict:
+    """A `CHANGELOG.md` write carrying an entry that claims no source change."""
+    return {
+        "file_path": "CHANGELOG.md",
+        "content": "## Unreleased\n\n- spec §11a rewritten\n{line}\n".format(line=line),
+    }
+
+
+def test_a_docs_only_entry_is_allowed_without_a_coverage_number(gate, project: Path) -> None:
+    """§11a: with no executable line changed there is nothing to measure, and inventing a
+    number would be worse than saying what did change."""
+    _with_verdict_and_green(project)
+    args = _docs_args("docs_changed: 2 files\n  - docs/bug-fixer-v3-spec.md\n  - README.md")
+    verdict = gate.decide(ledger=project, tool="write", args=args)
+    assert verdict.allow, verdict.reason
+
+
+def test_a_docs_only_entry_must_name_the_files_it_counts(gate, project: Path) -> None:
+    """A bare count is unverifiable; the paths are what a reader can check."""
+    _with_verdict_and_green(project)
+    args = _docs_args("docs_changed: 2 files")
+    verdict = gate.decide(ledger=project, tool="write", args=args)
+    assert not verdict.allow, "a count without the list must not pass"
+    assert "list" in verdict.reason.lower() or "paths" in verdict.reason.lower()
+
+
+def test_the_docs_count_must_match_the_listed_paths(gate, project: Path) -> None:
+    """A count that disagrees with its own list is a typo or a false claim."""
+    _with_verdict_and_green(project)
+    args = _docs_args("docs_changed: 5 files\n  - docs/bug-fixer-v3-spec.md")
+    verdict = gate.decide(ledger=project, tool="write", args=args)
+    assert not verdict.allow
+    assert "5" in verdict.reason and "1" in verdict.reason
+
+
+def test_a_docs_only_entry_may_not_cover_an_executable_file(gate, project: Path) -> None:
+    """The form exists for documentation; a `.py` in the list means code changed and the
+    coverage number is required (§11a)."""
+    _with_verdict_and_green(project)
+    args = _docs_args("docs_changed: 2 files\n  - docs/spec.md\n  - hooks/bugfixer_gate.py")
+    verdict = gate.decide(ledger=project, tool="write", args=args)
+    assert not verdict.allow
+    assert "tested:" in verdict.reason
+
+
+def test_a_listed_docs_path_must_exist(gate, project: Path) -> None:
+    """A path nobody can find is not evidence that a file changed."""
+    _with_verdict_and_green(project)
+    args = _docs_args("docs_changed: 1 files\n  - docs/never-written.md")
+    verdict = gate.decide(ledger=project, tool="write", args=args)
+    assert not verdict.allow
+    assert "docs/never-written.md" in verdict.reason
+
+
+def test_a_docs_only_entry_still_needs_the_green_run(gate, project: Path) -> None:
+    """The form drops the coverage requirement, not the evidence requirement."""
+    project.write_text(
+        project.read_text(encoding="utf-8")
+        + "\n### F9 — probe\n\n**Verdict.** CONFIRMED — the cause was X.\n",
+        encoding="utf-8",
+    )
+    args = _docs_args("docs_changed: 1 files\n  - docs/bug-fixer-v3-spec.md")
+    verdict = gate.decide(ledger=project, tool="write", args=args)
+    assert not verdict.allow
+    assert "ФАКТ (GREEN)" in verdict.reason or "green" in verdict.reason.lower()
+
+
+# --- §11a: a tests-only change has nothing to measure either ----------------
+
+
+def _tests_args(line: str) -> dict:
+    """A `CHANGELOG.md` write carrying an entry that claims only tests changed."""
+    return {
+        "file_path": "CHANGELOG.md",
+        "content": "## Unreleased\n\n- tests extended\n{line}\n".format(line=line),
+    }
+
+
+def test_a_tests_only_entry_is_allowed_without_a_coverage_number(gate, project: Path) -> None:
+    """§11a: a test is the instrument, not the thing measured; with only tests changed there is
+    no coverage number to state, and the entry names the files instead."""
+    _with_verdict_and_green(project)
+    (project.parent.parent / "tests" / "test_extra.py").write_text("def test_x():\n    pass\n")
+    args = _tests_args("tests_changed: 1 files\n  - tests/test_extra.py")
+    verdict = gate.decide(ledger=project, tool="write", args=args)
+    assert verdict.allow, verdict.reason
+
+
+def test_a_tests_only_entry_must_name_the_files_it_counts(gate, project: Path) -> None:
+    """Symmetric with `docs_changed:`: a bare count cannot be checked."""
+    _with_verdict_and_green(project)
+    verdict = gate.decide(ledger=project, tool="write", args=_tests_args("tests_changed: 2 files"))
+    assert not verdict.allow
+    assert "list" in verdict.reason.lower() or "paths" in verdict.reason.lower()
+
+
+def test_the_tests_count_must_match_the_listed_paths(gate, project: Path) -> None:
+    """A count that disagrees with its own list tells two things at once."""
+    _with_verdict_and_green(project)
+    (project.parent.parent / "tests" / "test_extra.py").write_text("def test_x():\n    pass\n")
+    args = _tests_args("tests_changed: 4 files\n  - tests/test_extra.py")
+    verdict = gate.decide(ledger=project, tool="write", args=args)
+    assert not verdict.allow
+    assert "4" in verdict.reason and "1" in verdict.reason
+
+
+def test_a_tests_only_entry_may_not_cover_production_code(gate, project: Path) -> None:
+    """The form exists for tests; a production file in the list means the coverage number is
+    required, because that is what the reader needs to judge the change."""
+    _with_verdict_and_green(project)
+    (project.parent.parent / "tests" / "test_extra.py").write_text("def test_x():\n    pass\n")
+    (project.parent.parent / "lib").mkdir(exist_ok=True)
+    (project.parent.parent / "lib" / "app.py").write_text("x = 1\n")
+    args = _tests_args("tests_changed: 2 files\n  - tests/test_extra.py\n  - lib/app.py")
+    verdict = gate.decide(ledger=project, tool="write", args=args)
+    assert not verdict.allow
+    assert "tested:" in verdict.reason
+
+
+def test_a_listed_tests_path_must_exist(gate, project: Path) -> None:
+    """A test file nobody can find is not evidence that a test changed."""
+    _with_verdict_and_green(project)
+    args = _tests_args("tests_changed: 1 files\n  - tests/test_never_written.py")
+    verdict = gate.decide(ledger=project, tool="write", args=args)
+    assert not verdict.allow
+    assert "tests/test_never_written.py" in verdict.reason
+
+
 # --- the contract grew three fields, without becoming a fifth point ---------
 
 

@@ -671,7 +671,7 @@
       ]
     },
     "49": {
-      "text": "**`CHANGELOG.md` — только после доказательства.** Две независимые проверки: (1) прогон **весь зелёный** — маркер `ФАКТ (GREEN):` без падений и без `ФАКТ (регрессия):` после него; (2) покрытие **изменённых строк** не ниже `Min coverage:` (по умолчанию 75%), с обязательной строкой `tested: <n>%` (§11a). Порог относится к покрытию, **не** к доле прошедших тестов: «75% тестов зелёные» — это падающий набор, а не зелёный. Любое из двух условий не выполнено → `deny`",
+      "text": "**`CHANGELOG.md` — только после доказательства.** Две независимые проверки: (1) прогон **весь зелёный** — маркер `ФАКТ (GREEN):` без падений и без `ФАКТ (регрессия):` после него; (2) покрытие **изменённых строк** не ниже `Min coverage:` (по умолчанию 75%), с обязательной строкой `tested: <n>%` (§11a). Изменение без исполняемых строк несёт вместо неё одну из двух форм: `docs_changed: <n> files` (документация, спека, задача) или `tests_changed: <n> files` (только тесты), каждая — со списком путей; гейт сверяет число с перечислением и расширения, но git не читает (§12). При любом изменении production-кода `tested:` обязательно. Порог относится к покрытию, **не** к доле прошедших тестов: «75% тестов зелёные» — это падающий набор, а не зелёный. Любое из условий не выполнено → `deny`",
       "tests": [
         "changed_coverage_v3::test_a_python_file_without_a_coverage_record_counts_as_missed",
         "changed_coverage_v3::test_a_file_coverage_cannot_measure_is_left_out_of_the_denominator",
@@ -689,7 +689,18 @@
         "write_scope_v3::test_a_partially_failing_run_is_not_green",
         "write_scope_v3::test_no_green_marker_at_all_is_refused",
         "write_scope_v3::test_a_regression_after_the_green_run_is_refused",
-        "write_scope_v3::test_a_regression_before_the_green_run_does_not_block"
+        "write_scope_v3::test_a_regression_before_the_green_run_does_not_block",
+        "write_scope_v3::test_a_docs_only_entry_is_allowed_without_a_coverage_number",
+        "write_scope_v3::test_a_docs_only_entry_must_name_the_files_it_counts",
+        "write_scope_v3::test_the_docs_count_must_match_the_listed_paths",
+        "write_scope_v3::test_a_docs_only_entry_may_not_cover_an_executable_file",
+        "write_scope_v3::test_a_listed_docs_path_must_exist",
+        "write_scope_v3::test_a_docs_only_entry_still_needs_the_green_run",
+        "write_scope_v3::test_a_tests_only_entry_is_allowed_without_a_coverage_number",
+        "write_scope_v3::test_a_tests_only_entry_must_name_the_files_it_counts",
+        "write_scope_v3::test_the_tests_count_must_match_the_listed_paths",
+        "write_scope_v3::test_a_tests_only_entry_may_not_cover_production_code",
+        "write_scope_v3::test_a_listed_tests_path_must_exist"
       ]
     }
   },

@@ -2134,11 +2134,17 @@ def _changelog_problem(args: dict[str, Any], ledger: Path) -> str:
         )
     match = re.search(r"tested:\s*(\d{1,3})\s*%", content)
     if not match:
-        return (
-            f"`CHANGELOG.md` entries must state their coverage as `tested: <n>%` (spec §11a). "
-            f"The threshold for this project is {threshold}%, and an entry without the number "
-            "tells a reader nothing about whether the change is covered."
-        )
+        # §11a: a change that touches no measurable line has nothing to measure, so the entry
+        # names what did change instead of inventing a percentage. `None` means no such claim
+        # was made, and then the number is still required.
+        alternative = _counted_claim_problem(content, ledger)
+        if alternative is None:
+            return (
+                f"`CHANGELOG.md` entries must state their coverage as `tested: <n>%` (spec "
+                f"§11a). The threshold for this project is {threshold}%, and an entry without "
+                "the number tells a reader nothing about whether the change is covered."
+            )
+        return alternative
     reported = int(match.group(1))
     if reported < threshold:
         return (
@@ -2152,6 +2158,141 @@ def _changelog_problem(args: dict[str, Any], ledger: Path) -> str:
         return (
             f"`tested: {reported}%` cannot be verified: the contract names no "
             "`Coverage command:`. Add one, or the number is a claim nobody checked (spec §0)."
+        )
+    return ""
+
+
+def _docs_only_problem(content: str, ledger: Path) -> str | None:
+    """Judge a ``docs_changed:`` or ``tests_changed:`` claim (§11a), or ``None``.
+
+    Two changes have nothing to measure, for opposite reasons: documentation has no executable
+    line, and a test *is* the instrument rather than the thing measured. Both name their files
+    instead of inventing a percentage, and both are checked the same way, so one reader serves
+    both — a second copy would drift from this one.
+
+    Checks that need no git access (§12): the count matches the list, every listed path has the
+    extension its form allows, and every listed path exists. ``tests_changed:`` gets one more,
+    which does use the contract: every path is under ``Test paths:``, because a suffix cannot
+    tell a test from production code.
+
+    Args:
+        content: The entry text being written.
+        ledger: Ledger being enforced; its project resolves the listed paths.
+
+    Returns:
+        A refusal message, or ``None`` when no such claim is present.
+    """
+    return _counted_claim_problem(content, ledger)
+
+
+def _counted_claim_problem(content: str, ledger: Path) -> str | None:
+    """Judge a ``docs_changed:``/``tests_changed:`` claim.
+
+    Args:
+        content: The entry text being written.
+        ledger: Ledger being enforced.
+
+    Returns:
+        A refusal message (possibly empty when the claim holds), or ``None`` when the entry makes
+        no such claim and the caller should demand ordinary coverage instead.
+    """
+    for field, allowed, what in (
+        ("docs_changed", _DOC_SUFFIXES, "documentation"),
+        ("tests_changed", (".py", ".pyi"), "test files"),
+    ):
+        declaration = re.search(rf"{field}:\s*(\d+)\s*files", content)
+        if declaration is None:
+            continue
+        problem = _counted_change_problem(content, ledger, field, allowed, what, declaration)
+        if problem:
+            return problem
+        if field == "tests_changed":
+            tests = _test_paths(ledger)
+            outside = [
+                path
+                for path in _listed_paths(content, declaration)
+                if not any(path.replace("\\", "/").startswith(prefix) for prefix in tests)
+            ]
+            if outside:
+                return (
+                    f"`tests_changed:` names {outside[0]!r}, which is not under this project's "
+                    "`Test paths:`. The form is only for changes to test files: with production "
+                    "code changed the entry must carry `tested: <n>%` (spec §11a)."
+                )
+        return ""
+    return None
+
+
+def _listed_paths(content: str, declaration: re.Match[str]) -> list[str]:
+    """The bulleted paths that follow a ``<field>: <n> files`` declaration.
+
+    Args:
+        content: The entry text being written.
+        declaration: Match of the count line.
+
+    Returns:
+        Paths in the order written, with surrounding backticks and quotes removed.
+    """
+    listed: list[str] = []
+    for line in content[declaration.end() :].splitlines():
+        item = re.match(r"^[-*]\s+(.+)$", line.strip())
+        if item is None:
+            if listed:
+                break
+            continue
+        listed.append(item.group(1).strip().strip("`").strip("\"'"))
+    return listed
+
+
+def _counted_change_problem(
+    content: str,
+    ledger: Path,
+    field: str,
+    allowed: tuple[str, ...],
+    what: str,
+    declaration: re.Match[str],
+) -> str:
+    """Check one ``<field>: <n> files`` claim against its own list of paths.
+
+    Args:
+        content: The entry text being written.
+        ledger: Ledger being enforced.
+        field: The marker this claim uses, e.g. ``docs_changed``.
+        allowed: Suffixes the claim may name.
+        what: Human name of the category, for the refusal.
+        declaration: Match of the count line.
+
+    Returns:
+        A refusal message, or an empty string when this claim holds.
+    """
+    declared = int(declaration.group(1))
+    listed = _listed_paths(content, declaration)
+
+    if not listed:
+        return (
+            f"`{field}:` must list the files it counts, one path per line (spec §11a): a number "
+            "alone cannot be checked by anyone, and the list is the whole point of the form. "
+            "Add the paths indented under the count."
+        )
+    if declared != len(listed):
+        return (
+            f"`{field}: {declared} files` lists {len(listed)} path(s). The count and the list "
+            "must agree, or the entry tells a reader two different things (spec §11a)."
+        )
+
+    wrong_kind = [path for path in listed if Path(path).suffix.lower() not in allowed]
+    if wrong_kind:
+        return (
+            f"`{field}:` names {wrong_kind[0]!r}, which is not {what}. This form is only for a "
+            "change that touches no measurable line: with production code changed the entry must "
+            "carry `tested: <n>%` and meet the threshold (spec §11a)."
+        )
+    root = _project_of(ledger)
+    missing = [path for path in listed if not (root / path).is_file()]
+    if missing:
+        return (
+            f"`{field}:` names {missing[0]!r}, which does not exist in the project. A path "
+            "nobody can find is not evidence that a file changed (spec §11a)."
         )
     return ""
 

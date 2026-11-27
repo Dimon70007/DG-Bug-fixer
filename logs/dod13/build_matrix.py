@@ -698,6 +698,18 @@ SUPPORT: dict[str, list[str]] = {
         "end_to_end_v3::test_the_whole_run_from_doctor_to_done",
         "end_to_end_v3::test_the_install_is_what_refused_not_the_source_checkout",
     ],
+    "DoD-6 (native OpenClaw manifest and adapter, written to the documented shape)": [
+        "openclaw_v3::test_the_native_manifest_exists_and_is_valid_json",
+        "openclaw_v3::test_the_manifest_carries_a_config_schema",
+        "openclaw_v3::test_the_manifest_declares_no_option_that_nothing_reads",
+        "openclaw_v3::test_a_denial_becomes_block_with_a_reason",
+        "openclaw_v3::test_every_refusal_reason_is_a_non_empty_template",
+        "openclaw_v3::test_the_adapter_registers_a_typed_hook",
+        "openclaw_v3::test_the_adapter_denies_when_the_gate_cannot_start",
+        "openclaw_v3::test_the_adapter_does_not_depend_on_bun",
+        "openclaw_v3::test_the_readme_says_execution_was_not_observed",
+        "openclaw_v3::test_the_disclaimer_is_not_the_only_thing_holding_the_claim_up",
+    ],
     "DoD-13 (the invariant matrix is complete in both directions)": [
         "invariant_matrix_v3::test_the_matrix_holds_all_fifty_four_invariants",
         "invariant_matrix_v3::test_every_invariant_names_a_test_or_says_why_it_cannot",

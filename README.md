@@ -105,6 +105,7 @@ bug-fixer/
 │   ├── project-rule.md           # the rules file: why the main channel is not a hook
 │   ├── project-contract.md       # TEMPLATE: fill this for your project
 │   └── invariant-matrix.json     # spec §13: which test holds each invariant, both ways
+├── openclaw.plugin.json          # native OpenClaw manifest (skills alone run no hooks there)
 ├── bin/
 │   └── bugfixer                  # single entry point: `bugfixer doctor` / `init`
 ├── lib/
@@ -457,6 +458,22 @@ openclaw skills check
 
 OpenClaw snapshots eligible skills at session start, so a mid-session install appears on the
 next conversation. The skills watcher normally picks up changes sooner.
+
+**The gate needs the native plugin, not the skill folder.** OpenClaw reads Cursor and Claude bundles
+for skills and metadata but **runs none of their hooks** — its `.cursor/hooks.json` handling is
+detect-only. Enforcement therefore ships as `openclaw.plugin.json` plus
+`hooks/openclaw-plugin.ts`, which registers `api.on("before_tool_call")` and answers in the one shape
+OpenClaw documents as terminal:
+
+```json
+{ "block": true, "blockReason": "<why, in words the agent can act on>" }
+```
+
+**Not executed on a machine.** There is no OpenClaw install here, so the manifest and adapter are
+written to the vendor's documented shape and tested for that shape only. Nothing in this repository
+proves OpenClaw loaded the plugin or that the hook fired: the first real run is on the operator's
+machine. If it misbehaves there, the adapter is the one file to read — it is deliberately the only
+place the OpenClaw-specific wiring lives.
 
 ### One command for several agents
 

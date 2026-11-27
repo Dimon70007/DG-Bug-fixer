@@ -1,0 +1,10 @@
+{
+  "id": "bug-fixer",
+  "name": "Bug Fixer",
+  "description": "Five-phase debugging skill with a gate: production code may only change as a probe of a stated hypothesis. Blocks tool calls that break the phase rule, the attempt cap, or the write boundary.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

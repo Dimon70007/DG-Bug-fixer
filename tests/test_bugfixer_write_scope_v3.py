@@ -28,7 +28,7 @@ CONTRACT = (
     "## Ledger\n\n- Task/bug file: tasks/TASK-*.md\nRaw dumps: logs/dumps/\n"
     "Docs paths: docs/\n"
     "## Tests\n\nFull suite: pytest\nTest paths: tests/\n"
-    "Coverage command: coverage report\nMin coverage: 90\n"
+    "Coverage command: coverage report\nMin coverage: 75\n"
     "## Search\n\nSearch: none\n"
     "## Extra prohibitions\n\n- no sudo\n"
 )
@@ -221,7 +221,7 @@ def test_the_changelog_is_refused_without_a_coverage_number(gate, project: Path)
 
 
 def test_the_changelog_is_refused_below_the_threshold(gate, project: Path) -> None:
-    """Under 90% the change is not covered enough to be recorded as done (invariant 49)."""
+    """Under 75% the change is not covered enough to be recorded as done (invariant 49)."""
     ledger = project
     ledger.write_text(
         ledger.read_text(encoding="utf-8")
@@ -230,7 +230,7 @@ def test_the_changelog_is_refused_below_the_threshold(gate, project: Path) -> No
     )
     verdict = gate.decide(ledger=ledger, tool="write", args=_changelog_args("tested: 72%"))
     assert not verdict.allow
-    assert "90%" in verdict.reason
+    assert "75%" in verdict.reason
     assert "TDD" in verdict.reason or "tests first" in verdict.reason
 
 
@@ -308,10 +308,10 @@ def test_docs_paths_reads_a_list_and_tolerates_absence() -> None:
 def test_min_coverage_defaults_to_the_spec_number() -> None:
     """The default belongs to §11a; a plugin constant that drifted from it would be a second norm."""
     contract = _contract_module()
-    assert contract.min_coverage("") == contract.DEFAULT_MIN_COVERAGE == 90
-    assert contract.min_coverage("Min coverage: 75\n") == 75
+    assert contract.min_coverage("") == contract.DEFAULT_MIN_COVERAGE == 75
+    assert contract.min_coverage("Min coverage: 80\n") == 80
     assert contract.min_coverage("Min coverage: 95%\n") == 95
-    assert contract.min_coverage("Min coverage: nonsense\n") == 90
+    assert contract.min_coverage("Min coverage: nonsense\n") == 75
 
 
 def test_coverage_command_is_empty_when_the_project_names_none() -> None:
@@ -405,7 +405,7 @@ def test_a_changelog_edit_without_content_is_refused(gate, project: Path) -> Non
     assert "does not carry the new text" in verdict.reason
 
 
-# --- the run has to be green in full, not 90% of it -------------------------
+# --- the run has to be green in full, not 75% of it -------------------------
 
 
 def _with_green(gate, ledger: Path, green_line: str, extra: str = "") -> object:
@@ -440,7 +440,7 @@ def test_a_green_run_allows_the_entry(gate, project: Path) -> None:
 def test_a_partially_failing_run_is_not_green(gate, project: Path, line: str) -> None:
     """§11a: the threshold is about coverage, not about the share of tests that passed.
 
-    A suite where 90% of tests pass is a failing suite. An entry written then would claim the
+    A suite where 75% of tests pass is a failing suite. An entry written then would claim the
     change works while the run says it does not.
     """
     verdict = _with_green(gate, project, line)

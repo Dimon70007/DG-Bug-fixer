@@ -2121,7 +2121,7 @@ def _changelog_problem(args: dict[str, Any], ledger: Path) -> str:
             "Finish phase 4, record `**Verdict.**`, then write the entry."
         )
     # Two independent conditions (invariant 49). The threshold applies to *coverage*; the run
-    # itself has to be green in full — "90% of tests passed" is a failing suite, not a green one.
+    # itself has to be green in full — "75% of tests passed" is a failing suite, not a green one.
     green_problem = _green_run_problem(text)
     if green_problem:
         return green_problem
@@ -2164,7 +2164,7 @@ def _green_run_problem(text: str) -> str:
     claim from being made when the evidence contradicts it.
 
     The distinction that matters: the coverage threshold is a number about *lines*, and this is
-    about the run as a whole. A suite where 90% of tests pass is a failing suite, and a changelog
+    about the run as a whole. A suite where 75% of tests pass is a failing suite, and a changelog
     entry saying the change is done would be false.
 
     Args:
@@ -2189,7 +2189,7 @@ def _green_run_problem(text: str) -> str:
         return (
             "the last `ФАКТ (GREEN):` records a failing or erroring run ("
             f"`{result.strip()[:120]}`). Every test has to pass before a changelog entry: the "
-            "90% threshold is about *coverage of changed lines*, not about the share of tests "
+            "75% threshold is about *coverage of changed lines*, not about the share of tests "
             "that passed. Fix the suite, then record the new run."
         )
     # A regression recorded after the green run means the baseline broke later: the green marker

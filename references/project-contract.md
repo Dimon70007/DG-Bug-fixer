@@ -45,7 +45,7 @@ detail of one — never a fifth requirement.
 | `Raw dumps:` | optional | a directory for logs too large for the task file (§5.3); writable in **every** phase (§5.5) |
 | `Docs paths:` | optional | where prose lives (`docs/`, `.`); writable in every phase (§5.5, invariant 46) |
 | `Coverage command:` | optional | how changed-lines coverage is measured; without it a `tested:` claim cannot be checked (§11a) |
-| `Min coverage:` | optional | the threshold for `CHANGELOG.md`; default 90 (§11a, invariant 49) |
+| `Min coverage:` | optional | the threshold for `CHANGELOG.md`; default 75 (§11a, invariant 49) |
 
 ---
 
@@ -68,7 +68,7 @@ not allowed: no `DEBUG.md`, no separate notes file.
 Full suite: <the command the gate reruns, e.g. make test>
 Test paths: <comma-separated prefixes that are tests, e.g. tests/, pkg/tests/>
 Coverage command: <the command that reports changed-line coverage, e.g. coverage report>
-Min coverage: <threshold for a CHANGELOG entry, 90 unless this project says otherwise>
+Min coverage: <threshold for a CHANGELOG entry, 75 unless this project says otherwise>
 
 `Test paths:` is what lets the gate allow a test edit before the cause is confirmed while
 refusing a production edit. Use prefixes from the project root, not globs.

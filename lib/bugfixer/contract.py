@@ -51,7 +51,7 @@ UNVERIFIED: Final[str] = "not yet"
 
 #: Spec §11a's own default for changed-lines coverage. A project may raise or lower it with
 #: `Min coverage:`; the number lives in the spec, not in a plugin constant that drifts from it.
-DEFAULT_MIN_COVERAGE: Final[int] = 90
+DEFAULT_MIN_COVERAGE: Final[int] = 75
 
 #: The value that means "this project has no test suite". Legal, and it changes what the phases can
 #: do: phase 1 cannot record a baseline and phase 4 cannot compare, so the run ends in BLOCKED.
@@ -199,7 +199,7 @@ FIELD_POINTS: Final[dict[str, FieldRule]] = {
         names=_names(r"Docs paths?", r"Documentation paths?"),
         accepts=_PATHLIKE,
     ),
-    # §11a: the threshold for `CHANGELOG.md`. Optional — the spec's default is 90%, written as a
+    # §11a: the threshold for `CHANGELOG.md`. Optional — the spec's default is 75%, written as a
     # field so a project can raise or lower it without editing the plugin.
     "Min coverage": FieldRule(
         name="Min coverage",

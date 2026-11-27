@@ -837,6 +837,51 @@ def _remove_project_rules(plan: InstallPlan, *, dry_run: bool) -> int:
         touched += 1
     return touched
 
+#: What the operator must do before the change is visible, per harness. Measured, not assumed:
+#: a harness reads skill metadata, rules and hook configs when a session starts, so a file written
+#: mid-session is not picked up by the session already in flight. Without this line the install
+#: looks broken — the skill is not in the `/` list, the rule does not apply, the hook never fires —
+#: and the natural conclusion is that the plugin failed.
+#:
+#: Cursor is named explicitly because its own remedy is not "start a chat": an open window has to
+#: be reloaded (`Developer: Reload Window`) for skill discovery and rule registration to re-read.
+RELOAD_ADVICE: Final[dict[str, str]] = {
+    "cursor": "reload the Cursor window (Command Palette → Developer: Reload Window), then start a "
+    "new chat — skills, rules and hooks are read when a window opens, not when a chat starts",
+    "claude": "start a new Claude Code session — hooks and rules are read at session start",
+    "codex": "start a new Codex session, and re-trust the hook if Codex asks — a changed hook "
+    "definition is skipped until it is trusted again",
+    "opencode": "restart OpenCode so the plugin module is reloaded",
+    "openclaw": "restart the OpenClaw gateway so the plugin is reloaded",
+}
+
+
+def reload_notice(targets: list[str], *, action: str) -> list[str]:
+    """Say what has to happen before the change is visible.
+
+    A skill or hook written into a live session changes nothing until that session re-reads it.
+    Saying so is the difference between "installed, works after a reload" and "installed, does not
+    work", and the second reading is the one an operator reaches on their own.
+
+    Args:
+        targets: Target ids that were installed into or removed from.
+        action: ``installed`` or ``removed``, used in the wording.
+
+    Returns:
+        Lines to print; empty when no target has anything to say.
+    """
+    seen: list[str] = []
+    for target in targets:
+        advice = RELOAD_ADVICE.get(target)
+        if advice and advice not in seen:
+            seen.append(advice)
+    if not seen:
+        return []
+    lines = ["", f"bug-fixer {action}. Before it takes effect:"]
+    lines.extend(f"  - {advice}" for advice in seen)
+    return lines
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     """Parse CLI arguments."""
     parser = argparse.ArgumentParser(
@@ -907,6 +952,9 @@ def main(argv: list[str] | None = None) -> int:
         verb = "would remove" if args.dry_run else "removed"
         prefix = "[dry-run] " if args.dry_run else ""
         print(f"{prefix}{verb} {total} item(s) for {_skill_id()}")
+        _print_reload_notice(
+            [plan.target for plan in plans], action="removed", dry_run=args.dry_run
+        )
         return 0
 
     for plan in plans:
@@ -915,7 +963,27 @@ def main(argv: list[str] | None = None) -> int:
     verb = "would install" if args.dry_run else "installed"
     prefix = "[dry-run] " if args.dry_run else ""
     print(f"{prefix}{verb} {_skill_id()} into {len(plans)} target(s)")
+    _print_reload_notice(
+        [plan.target for plan in plans], action="installed", dry_run=args.dry_run
+    )
     return 0
+
+
+def _print_reload_notice(targets: list[str], *, action: str, dry_run: bool) -> None:
+    """Print the reload advice, marked as a prediction in a dry run.
+
+    Args:
+        targets: Target ids touched by this run.
+        action: ``installed`` or ``removed``.
+        dry_run: When true, the notice describes what would be needed, not what is.
+    """
+    for line in reload_notice(targets, action=action):
+        if not line:
+            print()
+        elif dry_run:
+            print(f"[dry-run] {line}")
+        else:
+            print(line)
 
 
 if __name__ == "__main__":

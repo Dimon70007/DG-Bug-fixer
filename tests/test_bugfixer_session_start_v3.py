@@ -532,6 +532,65 @@ def test_the_rule_mapping_exists_in_one_place(rules, tmp_path: Path) -> None:
     assert codex == {tmp_path / rules.AGENTS_FILE}
 
 
+def test_every_install_and_removal_names_the_restart(tmp_path: Path) -> None:
+    """DoD-8: a change to skills, rules or hooks is invisible until the harness re-reads them.
+
+    Without the line the install looks broken — the skill is not in the `/` list, the rule does not
+    apply, the hook never fires — and the operator's reasonable conclusion is that the plugin
+    failed. Cursor is named with its own remedy: an open window must be reloaded, because a new
+    chat does not re-read skill discovery.
+    """
+    for action in ("--uninstall", ""):
+        args = [str(_INSTALL), "--target", "cursor", "--project", str(tmp_path)]
+        if action:
+            args.append(action)
+        result = subprocess.run(
+            [sys.executable, *args], text=True, capture_output=True, check=False
+        )
+        assert result.returncode == 0, result.stderr
+        combined = result.stdout + result.stderr
+        assert "Reload Window" in combined, combined
+        assert "Cursor" in combined, combined
+
+
+def _load_installer():
+    """Import the plugin's installer from its path, registered for dataclass lookup.
+
+    The installer is a script, not a package module, so it is loaded by path — the same way the
+    plugin's own `bin/bugfixer` reaches its library. Registering it in `sys.modules` before
+    execution is what lets its dataclasses resolve their string annotations.
+    """
+    name = "install_plugin_targets"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, _INSTALL)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
+
+def test_the_restart_notice_covers_every_installed_harness(tmp_path: Path) -> None:
+    """A harness with no advice would be the one where "it does not work" happens."""
+    module = _load_installer()
+    lines = module.reload_notice(list(module._PROJECT_TARGETS), action="installed")
+    assert len(lines) >= 2
+    for target in module._PROJECT_TARGETS:
+        assert module.RELOAD_ADVICE.get(target), f"no restart advice for {target}"
+
+
+def test_the_restart_notice_is_not_printed_for_an_unknown_target() -> None:
+    """Silence beats invented advice: `openclaw` needs no window, and guessing would be wrong."""
+    module = _load_installer()
+    assert module.reload_notice([], action="installed") == []
+    assert module.reload_notice(["nonexistent"], action="installed") == []
+
+
 def test_uninstall_keeps_the_project_agents_md_text(ready_project: Path) -> None:
     """Removing the plugin is not a reason to lose the project's own instructions."""
     (ready_project / "AGENTS.md").write_text("# Project\n\nours\n", encoding="utf-8")

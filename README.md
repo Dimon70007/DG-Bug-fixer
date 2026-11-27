@@ -181,7 +181,7 @@ one at the skill root, so the skill directory *is* the plugin:
 ```json
 {
   "name": "bug-fixer",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "hooks": "./hooks/hooks-cursor.json"
 }
 ```

@@ -140,16 +140,68 @@ def test_skill_directory_is_complete() -> None:
         assert path.is_file(), f"missing skill artefact: {path}"
 
 
+def _declared_versions() -> dict[str, str]:
+    """Read the version from every manifest that declares one.
+
+    Three places, one release: the skill loader reads `SKILL.md` metadata, Cursor reads
+    `.cursor-plugin/plugin.json`, and the package metadata carries `pyproject.toml`.
+
+    Returns:
+        Version string per manifest file name.
+    """
+    skill = re.search(r'^\s*version:\s*"?([^"\n]+)"?', _skill_text(), re.MULTILINE)
+    package = re.search(
+        r'^version\s*=\s*"([^"]+)"',
+        (_SKILL_DIR / "pyproject.toml").read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    plugin = re.search(
+        r'"version"\s*:\s*"([^"]+)"',
+        (_SKILL_DIR / ".cursor-plugin" / "plugin.json").read_text(encoding="utf-8"),
+    )
+    assert skill and package and plugin, "a manifest no longer declares a version"
+    return {
+        "SKILL.md": skill.group(1).strip(),
+        "pyproject.toml": package.group(1).strip(),
+        ".cursor-plugin/plugin.json": plugin.group(1).strip(),
+    }
+
+
+def test_the_declared_version_is_the_same_in_every_manifest() -> None:
+    """DoD-10: a version bumped in one place is a release the harness never sees.
+
+    The harnesses read different manifests: Cursor reads `.cursor-plugin/plugin.json`, the skill
+    loader reads `SKILL.md` metadata, and the package metadata carries `pyproject.toml`. Drift is
+    invisible — the plugin keeps serving the old version, and the "a version without a bump is
+    invisible to the harness" rule silently stops holding.
+    """
+    versions = _declared_versions()
+    assert len(set(versions.values())) == 1, f"versions disagree: {versions}"
+
+
 def test_frontmatter_is_valid() -> None:
     """Frontmatter carries the name, a trigger description, and a version."""
     meta = _frontmatter(_skill_text())
     assert meta["name"] == "bug-fixer"
     assert len(meta.get("description", "")) > 40, "description must explain when to use the skill"
-    assert '"3.0.0"' in meta.get("metadata", ""), "metadata.version is not 3.0.0"
+    version = _declared_versions()["SKILL.md"]
+    assert version.startswith("3."), f"metadata.version is {version}, not a 3.x release"
     assert "пятифазн" in meta["description"], (
         "the description still advertises the three-phase cycle, so the skill would be "
         "chosen or skipped by a wrong trigger"
     )
+
+
+def test_the_declared_version_is_the_same_in_every_manifest() -> None:
+    """DoD-10: a version bumped in one place is a release the harness never sees.
+
+    The harnesses read different manifests: Cursor reads `.cursor-plugin/plugin.json`, the skill
+    loader reads `SKILL.md` metadata, and the package metadata carries `pyproject.toml`. Drift is
+    invisible — the plugin keeps serving the old version, and the rule "a version without a bump is
+    invisible to the harness" silently stops holding.
+    """
+    versions = _declared_versions()
+    assert len(set(versions.values())) == 1, f"versions disagree: {versions}"
 
 
 def test_required_sections_present() -> None:

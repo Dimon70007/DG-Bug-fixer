@@ -42,7 +42,10 @@ detail of one — never a fifth requirement.
 | `Test paths:` | 2 — detail: what counts as a test | the gate allows test edits in phases 1–3 while refusing production edits (§1) |
 | `Search:` | 3 — which tools may search | step 3.3; `none` means skip research |
 | `Prohibitions:` | 4 — what this project forbids | §15 |
-| `Raw dumps:` | optional | a directory for logs too large for the task file (§5.3); without it they stay in the task file |
+| `Raw dumps:` | optional | a directory for logs too large for the task file (§5.3); writable in **every** phase (§5.5) |
+| `Docs paths:` | optional | where prose lives (`docs/`, `.`); writable in every phase (§5.5, invariant 46) |
+| `Coverage command:` | optional | how changed-lines coverage is measured; without it a `tested:` claim cannot be checked (§11a) |
+| `Min coverage:` | optional | the threshold for `CHANGELOG.md`; default 90 (§11a, invariant 49) |
 
 ---
 
@@ -55,6 +58,7 @@ detail of one — never a fifth requirement.
 
 Task/bug file: <glob or path, e.g. tasks/TASK-*.md; alternatives may follow as `a | b`>
 Raw dumps: <directory for logs too large for the task file, e.g. logs/dumps/>
+Docs paths: <where prose lives, e.g. docs/ or `.` for the root>
 
 Findings go into that file as `F<n>` blocks, appended, never reordered. A second ledger is
 not allowed: no `DEBUG.md`, no separate notes file.
@@ -63,6 +67,8 @@ not allowed: no `DEBUG.md`, no separate notes file.
 
 Full suite: <the command the gate reruns, e.g. make test>
 Test paths: <comma-separated prefixes that are tests, e.g. tests/, pkg/tests/>
+Coverage command: <the command that reports changed-line coverage, e.g. coverage report>
+Min coverage: <threshold for a CHANGELOG entry, 90 unless this project says otherwise>
 
 `Test paths:` is what lets the gate allow a test edit before the cause is confirmed while
 refusing a production edit. Use prefixes from the project root, not globs.

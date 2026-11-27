@@ -240,12 +240,33 @@ def test_init_finds_the_test_directory_whatever_it_is_called(
     The old code checked for the literal directory `tests` and gave up otherwise. A project with
     `spec/` or `__tests__/` got a placeholder, so the gate had no test paths and refused the
     test write Phase 1 exists to make.
+
+    A directory whose name only *suggests* tests must also hold one: `spec/` was accepted for its
+    name alone before 2026-11-27, and `docs/superpowers/specs/` then became a "test path" — prose
+    declared to be tests. The probe therefore writes a test file inside, which is what makes the
+    directory a test path rather than a word.
     """
-    (tmp_path / probe).mkdir(parents=True)
+    directory = tmp_path / probe
+    directory.mkdir(parents=True)
+    (directory / "test_sample.py").write_text("def test_x():\n    assert True\n", encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text("[tool.pytest]\n", encoding="utf-8")
     assert _run_cli("init", "--project", str(tmp_path), home=empty_home).returncode == 0
     text = (tmp_path / "bug-fixer.project.md").read_text(encoding="utf-8")
     assert probe in text.split("Test paths:")[1].splitlines()[0], text
+
+
+def test_a_directory_with_no_tests_is_not_a_test_path(tmp_path: Path, empty_home: Path) -> None:
+    """Measured defect: `docs/superpowers/specs/` was accepted for its name alone.
+
+    The contract then told the gate that prose was tests, which both opened a write path the
+    phase ban exists to close and hid every real test from it.
+    """
+    (tmp_path / "docs" / "superpowers" / "specs").mkdir(parents=True)
+    (tmp_path / "docs" / "superpowers" / "specs" / "guide.md").write_text("# spec\n")
+    assert _run_cli("init", "--project", str(tmp_path), home=empty_home).returncode == 0
+    text = (tmp_path / "bug-fixer.project.md").read_text(encoding="utf-8")
+    line = text.split("Test paths:")[1].splitlines()[0]
+    assert "specs" not in line, line
 
 
 @pytest.mark.parametrize(

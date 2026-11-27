@@ -370,11 +370,18 @@ def test_a_shell_read_of_the_journal_is_allowed(gate, project: Path) -> None:
     assert verdict.allow, verdict.reason
 
 
-def test_a_shell_write_to_a_same_named_file_elsewhere_is_denied(gate, project: Path) -> None:
-    """The exemption is by resolved path: another ``TASK-999.md`` is not this run's ledger."""
+def test_a_same_named_file_elsewhere_is_not_the_ledger(gate, project: Path) -> None:
+    """The ledger exemption is by resolved path, not by file name.
+
+    This used to assert a denial, which was really asserting the old rule "anything outside
+    `Test paths:` is code". Under §5.5 an `.md` file is documentation wherever it lives, so the
+    assertion moves to what the test was actually protecting: another `TASK-999.md` is not *this*
+    run's ledger, and the gate must not treat it as one.
+    """
     _set_phase(project, 1)
-    verdict = _verdict(gate, project, "write", {"file_path": "elsewhere/TASK-999.md"})
-    assert not verdict.allow, "a path match on the file name alone opened the phase ban"
+    elsewhere = project.parent / "elsewhere" / "TASK-999.md"
+    assert not gate._addresses_ledger(str(elsewhere), project)
+    assert gate._addresses_ledger(str(project), project)
 
 
 @pytest.mark.parametrize("phase", (1, 2, 3, 5))

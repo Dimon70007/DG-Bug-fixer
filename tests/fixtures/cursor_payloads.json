@@ -1,0 +1,52 @@
+[
+  {
+    "_shapes": "Captured from Cursor 3.32.10, 2026-11-27, real preToolUse hook. Paths and text are anonymised; the KEY SHAPES are verbatim, which is the whole point of this file (B-4 in TASK-085).",
+    "tool_name": "Read",
+    "tool_input": { "file_path": "notes.txt" },
+    "cwd": "/project",
+    "workspace_roots": null
+  },
+  {
+    "_shapes": "Shell carries a nested tool_input.cwd and a top-level cwd of '' (empty string, not absent). workspace_roots is the only reliable project signal for Shell.",
+    "tool_name": "Shell",
+    "tool_input": { "command": "pytest -q 2>/dev/null", "cwd": "", "timeout": 30000 },
+    "cwd": "",
+    "workspace_roots": ["/project"]
+  },
+  {
+    "_shapes": "No cwd key at all for Grep; only workspace_roots. A gate that reads cwd alone gets None here.",
+    "tool_name": "Grep",
+    "tool_input": { "pattern": "needle", "file_path": "/project/lib", "output_mode": "content" },
+    "cwd": null,
+    "workspace_roots": ["/project"]
+  },
+  {
+    "_shapes": "MCP tools arrive as 'MCP:<server>' — NOT 'CallDynamicTool' and NOT 'mcp__server__tool'. The arguments are the tool's own, with no wrapper field naming the tool.",
+    "tool_name": "MCP:tavily_search",
+    "tool_input": { "query": "some query", "max_results": 3 },
+    "cwd": null,
+    "workspace_roots": ["/project"]
+  },
+  {
+    "_shapes": "Write carries the absolute path in tool_input.file_path and the new contents in tool_input.content.",
+    "tool_name": "Write",
+    "tool_input": { "file_path": "/tmp/probe.txt", "content": "probe\n" },
+    "cwd": null,
+    "workspace_roots": ["/project"]
+  },
+  {
+    "_shapes": "ReadLints is a read-only tool the gate cannot classify; it carries only a path, and refusing it would block lint feedback during a run.",
+    "tool_name": "ReadLints",
+    "tool_input": { "file_path": "/project/lib/mod.py" },
+    "cwd": null,
+    "workspace_roots": ["/project"]
+  },
+  {
+    "_shapes": "CallDynamicTool and GetDynamicTools were invoked in the same session and NEVER reached the hook: only the nested MCP:<server> call did. Recorded here so a future reader does not add them by guessing.",
+    "tool_name": "GetDynamicTools",
+    "observed": "not delivered to preToolUse",
+    "tool_input": null,
+    "cwd": null,
+    "workspace_roots": ["/project"]
+  }
+]

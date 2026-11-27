@@ -167,23 +167,46 @@ _UNCHECKED_VERDICTS: Final[frozenset[str]] = frozenset({"PROPOSED", "PARTIALLY",
 
 #: Shell constructs that write to disk. Deliberately conservative: a false deny
 #: is noisy, a false allow is a silent bypass.
+#:
+#: A redirection into a *device* is excluded, because it is how every command silences itself:
+#: `pytest -q 2>/dev/null` writes no file. Measured defect (2026-11-27): that command was
+#: classified as a production write and refused in phase 1 — the phase whose whole job is to run
+#: the suite and record a baseline. The discard targets are `/dev/null`, `/dev/zero`, `/dev/std*`
+#: and a closing `>&-`; anything else after `>` or `>>` is still a write.
+_DISCARD_TARGET_RE: Final[str] = r"/dev/(?:null|zero|std(?:in|out|err))\b|[>&]-"
+
+#: Reading-only invocations of the archivers, limited to the unambiguous long flags. A bare
+#: `tar tzf` cluster is not distinguished: treating a listing as a write is a false deny, which
+#: is noisy but safe; treating a write as a listing is a bypass, which is not. Only long flags
+#: are excluded, because `--list`/`--version` cannot be confused with `xf`/`czf`.
+_ARCHIVE_READ_FLAGS: Final[str] = r"(?!-{1,2}(?:--list|--version|--help|--usage)\b)"
+
 _WRITE_COMMAND_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:^|[;&|]\s*)(?:"
+    rf"tar\s+{_ARCHIVE_READ_FLAGS}|unzip\s+(?!-l\b)|cpio\s+(?!-t\b)|rsync|scp|"
     r"rm|mv|cp|install|tee|touch|mkdir|rmdir|truncate|sed\s+-i|perl\s+-i|"
     r"dd\s+of=|chmod|chown|ln\s+-s|git\s+(?:apply|checkout|restore|reset|stash|commit)"
     r")\b"
-    r"|>>?\s*[^&|\s]"
+    rf"|>>?\s*(?!(?:{_DISCARD_TARGET_RE}))[^&|\s]"
 )
 
-#: The destination of a shell redirection, as a path.
-_REDIRECT_TARGET_RE: Final[re.Pattern[str]] = re.compile(r">>?[ \t]*([^&|\s;]+)")
+#: The destination of a shell redirection, as a path. Discard targets are excluded for the same
+#: reason: `/dev/null` is not a file the phase ban is about.
+_REDIRECT_TARGET_RE: Final[re.Pattern[str]] = re.compile(
+    rf">>?[ \t]*(?!(?:{_DISCARD_TARGET_RE}))([^&|\s;]+)"
+)
 
 #: The arguments of a shell command that writes to named paths. The path is what the
 #: phase ban is about, and taking it from the command is how a write to the ledger can be
 #: told from a write to production code in the same line.
+#:
+#: Measured gap (2026-11-27): `rsync -a src/ scratch/` and `tar xf a.tgz -C scratch` write files
+#: and were classified as reads, because neither name appeared here. That is a bypass of every
+#: phase rule, not a cosmetic omission, so the archivers and copy tools come first in the list.
 _WRITE_TARGET_COMMANDS_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?:^|[;&|]\s*)(?:rm|mv|cp|install|tee|touch|mkdir|rmdir|truncate|sed\s+-i|perl\s+-i|"
-    r"dd|chmod|chown|ln\s+-s|git\s+(?:apply|checkout|restore|reset|stash|commit))\b"
+    r"(?:^|[;&|]\s*)(?:rsync|tar|unzip|cpio|scp|install|mv|cp|rm|tee|touch|mkdir|rmdir|truncate"
+    r"|sed\s+-i|perl\s+-i|dd|chmod|chown|ln\s+-s"
+    r"|git\s+(?:apply|checkout|restore|reset|stash|commit))\b"
     r"([^\n;&|]*)"
 )
 
@@ -206,14 +229,16 @@ _WRITE_TOOLS: Final[frozenset[str]] = frozenset(
 #: Harness tool names that run shell commands.
 _SHELL_TOOLS: Final[frozenset[str]] = frozenset({"bash", "shell", "exec", "run_terminal_cmd", "terminal"})
 
-#: Harness tool names that provably cannot mutate the filesystem. Anything outside
-#: all three sets is *unknown*, and unknown is not silently allowed: during an
-#: active run it fails closed, because a harness renaming a tool must not turn the
-#: gate into decoration. Adding a name here is a deliberate act.
+#: Tools that provably cannot mutate the filesystem. Anything outside all three sets is
+#: *unknown*, and unknown is not silently allowed: during an active run it fails closed, because
+#: a harness renaming a tool must not turn the gate into decoration. Adding a name here is a
+#: deliberate act, and each name in this list came from a captured payload or a documented event —
+#: the list is a classification of what the harness can send, not a guess about this project.
 _SAFE_TOOLS: Final[frozenset[str]] = frozenset(
     {
         "read",
         "readfile",
+        "readlints",
         "grep",
         "search",
         "glob",
@@ -228,12 +253,21 @@ _SAFE_TOOLS: Final[frozenset[str]] = frozenset(
         "todowrite",
         "todoread",
         "notebookread",
+        "getdynamictools",
+        "awaitshell",
+        "switchmode",
+        "updatecurrentstep",
         "think",
         "ask",
         "askquestion",
     }
 )
 
+#: Prefix a harness uses for an MCP tool. Measured: Cursor sends ``MCP:tavily_search`` — not
+#: ``CallDynamicTool`` and not ``mcp__server__tool``, both of which were guesses (B-3/B-4).
+#: An MCP tool is a read as far as the filesystem is concerned: it cannot write a project file,
+#: so it is allowed during a run. Refusing it denied phase 3 its only search channel.
+_MCP_PREFIXES: Final[tuple[str, ...]] = ("mcp:", "mcp__")
 #: Ledger line that opts a non-bug-fix run (tooling, refactor) out of the Phase-1
 #: write ban. Anchored: a ledger describing the marker must not satisfy it.
 _PHASE_GATE_OFF_RE: Final[re.Pattern[str]] = re.compile(
@@ -535,7 +569,7 @@ def _is_write_attempt(tool: str, args: dict[str, Any]) -> tuple[bool, str]:
         return bool(_WRITE_COMMAND_RE.search(command)), command
     if tool in _WRITE_TOOLS:
         return True, _target_path(args)
-    if tool in _SAFE_TOOLS:
+    if tool in _SAFE_TOOLS or tool.startswith(_MCP_PREFIXES):
         return False, ""
     raise UnknownToolError(
         f"tool {tool!r} is neither a known write tool, a known shell tool, nor a known "
@@ -1463,6 +1497,7 @@ def decide(
     ledger: Path | None,
     tool: str,
     args: dict[str, Any],
+    dev_plugin: bool = False,
 ) -> Verdict:
     """Decide whether a tool call is allowed, and record a refusal.
 
@@ -1475,11 +1510,13 @@ def decide(
         ledger: Active ledger, or ``None`` when no bug-fixer run is under way.
         tool: Lowercased tool name.
         args: Tool arguments.
+        dev_plugin: Allow edits to the plugin's own skill tree. Set only from the explicit
+            `--dev-plugin` flag: a run that can rewrite its guard has no guard (invariant 47).
 
     Returns:
         The verdict for this call.
     """
-    verdict = _decide(ledger=ledger, tool=tool, args=args)
+    verdict = _decide(ledger=ledger, tool=tool, args=args, dev_plugin=dev_plugin)
     if ledger is not None and not verdict.allow:
         try:
             journal.append_event(ledger, event="deny", why=verdict.reason, tool=tool)
@@ -1495,6 +1532,7 @@ def _decide(
     ledger: Path | None,
     tool: str,
     args: dict[str, Any],
+    dev_plugin: bool = False,
 ) -> Verdict:
     """Decide whether a tool call is allowed.
 
@@ -1502,6 +1540,7 @@ def _decide(
         ledger: Active ledger, or ``None`` when no bug-fixer run is under way.
         tool: Lowercased tool name.
         args: Tool arguments.
+        dev_plugin: Allow edits to the plugin's own skill tree (invariant 47).
 
     Returns:
         The verdict for this call.
@@ -1607,7 +1646,32 @@ def _decide(
         )
 
     phase = read_phase(ledger)
-    if phase != 4 and phase_gate_enabled(text) and _is_code_write(detail, ledger, tool):
+    # Invariant 43 before every phase rule: the boundary is not a phase question. Told "phase 1
+    # forbids this", an agent would wait for phase 4 and try the same out-of-project write again.
+    outside = _outside_project_targets(detail, ledger, tool)
+    if outside:
+        return _deny(
+            "this writes outside the project ("
+            + ", ".join(outside)
+            + "). The plugin works inside the open project and its subdirectories only: no "
+            "writes to /tmp or any other system directory, in any phase. Keep temporary files "
+            "inside the project — the `Raw dumps:` directory of the contract, or the task file "
+            "itself. If a system file really has to change, print the command and let the user "
+            "run it (spec §15, invariant 43)."
+        )
+    # Invariant 49: `CHANGELOG.md` is a claim that a change is finished, so it is judged by
+    # evidence rather than by phase. Placed before the phase rules because "wait for phase 4"
+    # would be the wrong advice — the entry is written *after* a probe proved itself, in any phase.
+    if _is_changelog_write(detail, tool):
+        problem = _changelog_problem(args, ledger)
+        if problem:
+            return _deny(problem)
+        # The claim is backed by evidence, so the phase ban does not apply to this file.
+        return Verdict(allow=True)
+
+    if phase != 4 and phase_gate_enabled(text) and _is_code_write(
+        detail, ledger, tool, dev_plugin=dev_plugin
+    ):
         return _deny(
             f"Phase {phase} forbids production-code changes: only Phase 4 (probe) may edit "
             "code, and only as a probe of a named hypothesis. Phases 1-3 collect evidence; "
@@ -1616,7 +1680,9 @@ def _decide(
             "preconditions are written."
         )
 
-    if phase == 4 and phase_gate_enabled(text) and _is_code_write(detail, ledger, tool):
+    if phase == 4 and phase_gate_enabled(text) and _is_code_write(
+        detail, ledger, tool, dev_plugin=dev_plugin
+    ):
         try:
             active = active_hypothesis(text)
         except AmbiguousMarkerError as exc:
@@ -1804,34 +1870,333 @@ def _require_test_paths(ledger: Path, tool: str) -> list[str]:
     return tests
 
 
-def _is_code_write(detail: str, ledger: Path, tool: str) -> bool:
-    """Decide whether a write touches production code rather than tests.
+#: File extensions that hold prose and data, never behaviour (invariant 46). These are writable in
+#: every phase. Enumerating the *text* formats is shorter and safer than enumerating every source
+#: language: a language nobody listed would be silently writable, while a text format nobody listed
+#: is merely refused.
+_DOC_SUFFIXES: Final[tuple[str, ...]] = (
+    ".md",
+    ".markdown",
+    ".txt",
+    ".rst",
+    ".adoc",
+    ".asciidoc",
+    ".org",
+    ".log",
+    ".csv",
+    ".tsv",
+)
 
-    The ledger itself is never a production write (invariant 31); a shell command that
-    writes the ledger *and* something else is judged on the something else.
+#: The one text file whose write is a *claim* about the change rather than prose about it, and is
+#: therefore gated by evidence instead of by path (invariant 49, §11a).
+CHANGELOG_NAME: Final[str] = "CHANGELOG.md"
+
+#: Files the installer and `init` write. Without them the plugin does not install at all, so they
+#: are exempt in every phase, not only while a contract is missing (invariant 48).
+PLUGIN_FILES: Final[frozenset[str]] = frozenset(
+    {
+        "bug-fixer.project.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".gitignore",
+    }
+)
+
+#: Path fragments of the harness wiring: the rules file the plugin owns and the hook config it
+#: merges into. These are installation, so they are exempt alongside `PLUGIN_FILES`.
+_PLUGIN_WIRING_MARKERS: Final[tuple[tuple[str, ...], ...]] = (
+    (".cursor", "rules"),
+    (".cursor", "hooks.json"),
+    (".claude", "settings.json"),
+    (".codex", "hooks.json"),
+)
+
+#: The skill tree itself. Invariant 47: during a run this is code — the same as the project's own —
+#: and editing it needs `bugfixer --dev-plugin`, because a run that can rewrite its own guard has
+#: no guard.
+_SKILL_TREE_MARKERS: Final[tuple[tuple[str, ...], ...]] = (("skills", "bug-fixer"),)
+
+
+def _matches_suffix(path: str, suffixes: tuple[str, ...]) -> bool:
+    """Whether a path ends with one of these suffixes.
+
+    Args:
+        path: Path as written.
+        suffixes: Lowercase suffixes including the dot.
+
+    Returns:
+        ``True`` when the suffix matches.
+    """
+    return path.lower().endswith(suffixes)
+
+
+def _matches_markers(parts: tuple[str, ...], markers: tuple[tuple[str, ...], ...]) -> bool:
+    """Whether a path's parts contain one of these ordered marker sequences.
+
+    Args:
+        parts: Path components.
+        markers: Sequences that must appear consecutively.
+
+    Returns:
+        ``True`` on a match.
+    """
+    for marker in markers:
+        width = len(marker)
+        for index in range(len(parts) - width + 1):
+            if parts[index : index + width] == marker:
+                return True
+    return False
+
+
+def _is_plugin_file(path: str, root: Path, *, dev_plugin: bool = False) -> bool:
+    """Whether a path is a file the plugin itself writes.
+
+    Args:
+        path: Path as written, absolute or relative to the project.
+        root: Project directory.
+        dev_plugin: When true, the skill tree counts as a plugin file too — the documented way to
+            develop the plugin with its own gate installed (invariant 47).
+
+    Returns:
+        ``True`` for the contract, the rule files, the harness configs, and — only with
+        ``dev_plugin`` — the skill tree.
+    """
+    candidate = Path(path.strip().strip("\"'`")).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    if candidate.name in PLUGIN_FILES:
+        return True
+    parts = candidate.parts
+    if _matches_markers(parts, _PLUGIN_WIRING_MARKERS):
+        return True
+    return dev_plugin and _matches_markers(parts, _SKILL_TREE_MARKERS)
+
+
+def _is_doc_write(detail: str, ledger: Path, root: Path, tool: str) -> bool:
+    """Whether every target of this write is prose rather than behaviour.
+
+    Spec §5.5 and invariant 46: `.md`, `.txt`, `.log` and the rest are data. The one exception is
+    `CHANGELOG.md`, which is a claim about the change and is judged by evidence (§11a) instead.
+
+    Args:
+        detail: Path or command from the classified call.
+        ledger: Ledger being enforced.
+        root: Project directory.
+        tool: Lowercased tool name.
+
+    Returns:
+        ``True`` when all targets are documentation and none is the changelog.
+    """
+    targets = _shell_write_targets(detail) if tool in _SHELL_TOOLS else [detail]
+    if not targets:
+        return False
+    for target in targets:
+        cleaned = target.strip().strip("\"'`")
+        if Path(cleaned).name.upper() == CHANGELOG_NAME.upper():
+            return False
+        if not _matches_suffix(cleaned, _DOC_SUFFIXES):
+            return False
+    return True
+
+
+def _is_raw_dump_write(detail: str, ledger: Path, tool: str) -> bool:
+    """Whether the write goes to the project's raw-dump directory, or to `logs/`.
+
+    Invariant 45: logs are how phases 1–3 show their evidence, and §5.3 point 2 names the dump
+    directory as the place for output too large for the task file. Refusing it was a gate defect:
+    the agent had nowhere to put the full test output the spec tells it to record.
+
+    Args:
+        detail: Path or command from the classified call.
+        ledger: Ledger being enforced.
+        tool: Lowercased tool name.
+
+    Returns:
+        ``True`` when every target looks like a log destination.
+    """
+    targets = _shell_write_targets(detail) if tool in _SHELL_TOOLS else [detail]
+    if not targets:
+        return False
+    dumps = _raw_dump_paths(ledger)
+    for target in targets:
+        cleaned = target.strip().strip("\"'`")
+        if "logs" in Path(cleaned).parts:
+            continue
+        candidate = Path(cleaned)
+        if not candidate.is_absolute():
+            candidate = _project_of(ledger) / candidate
+        resolved = _normalized(candidate)
+        if any(resolved == dump or dump in resolved.parents for dump in dumps):
+            continue
+        return False
+    return True
+
+
+def _raw_dump_paths(ledger: Path) -> list[Path]:
+    """The raw-dump directories the contract names, resolved.
+
+    Args:
+        ledger: Ledger being enforced.
+
+    Returns:
+        Absolute directories; empty when the contract names none.
+    """
+    root = _project_of(ledger)
+    for base in [ledger.parent, *ledger.parents]:
+        contract = base / CONTRACT_NAME_HINT
+        if not contract.is_file():
+            continue
+        text = contract.read_text(encoding="utf-8", errors="replace")
+        match = re.search(
+            r"^Raw dumps(?:\s+too large for the ledger)?:\s*(.+)$", text, re.MULTILINE | re.IGNORECASE
+        )
+        if not match:
+            return []
+        return [
+            _normalized(root / item.strip().strip("`"))
+            for item in match.group(1).split(",")
+            if item.strip() and not item.strip().startswith("<")
+        ]
+    return []
+
+
+def _is_changelog_write(detail: str, tool: str) -> bool:
+    """Whether this call writes the project's `CHANGELOG.md`.
+
+    Args:
+        detail: Path or command from the classified call.
+        tool: Lowercased tool name.
+
+    Returns:
+        ``True`` when any target is the changelog.
+    """
+    targets = _shell_write_targets(detail) if tool in _SHELL_TOOLS else [detail]
+    return any(
+        Path(target.strip().strip("\"'`")).name.upper() == CHANGELOG_NAME.upper()
+        for target in targets
+    )
+
+
+def _changelog_problem(args: dict[str, Any], ledger: Path) -> str:
+    """Check that a `CHANGELOG.md` write is backed by evidence (§11a, invariant 49).
+
+    Three conditions, all required, because the entry exists to tell a reader "this is done and
+    proved": the run reached a verdict, the entry states its changed-lines coverage, and that
+    number meets the contract's threshold. Without a coverage command the plugin cannot verify a
+    `tested:` claim, and saying so is better than accepting the number on trust (§0).
+
+    Args:
+        args: Tool arguments, which carry the entry's text for a write tool.
+        ledger: Ledger being enforced.
+
+    Returns:
+        A refusal message, or an empty string when the claim is supported.
+    """
+    contract_text = _contract_text(ledger)
+    threshold = contract_module.min_coverage(contract_text)
+    command = contract_module.coverage_command(contract_text)
+
+    content = args.get("content") or args.get("new_string") or args.get("newStr") or ""
+    text = ledger.read_text(encoding="utf-8", errors="replace")
+    if not re.search(r"^\*\*Verdict\.\*\*", text, re.MULTILINE):
+        return (
+            "`CHANGELOG.md` is written only after a probe reached a verdict (spec §11a): the "
+            "entry says a change is finished, and there is no verdict in the task file yet. "
+            "Finish phase 4, record `**Verdict.**`, then write the entry."
+        )
+    if not isinstance(content, str) or not content:
+        # An edit that does not carry the new text cannot be checked; the gate says so rather
+        # than assuming the entry is fine.
+        return (
+            "this edit to `CHANGELOG.md` does not carry the new text, so its `tested:` claim "
+            "cannot be read. Use a write that includes the content (spec §11a)."
+        )
+    match = re.search(r"tested:\s*(\d{1,3})\s*%", content)
+    if not match:
+        return (
+            f"`CHANGELOG.md` entries must state their coverage as `tested: <n>%` (spec §11a). "
+            f"The threshold for this project is {threshold}%, and an entry without the number "
+            "tells a reader nothing about whether the change is covered."
+        )
+    reported = int(match.group(1))
+    if reported < threshold:
+        return (
+            f"`tested: {reported}%` is below this project's threshold of {threshold}%. The "
+            "change is not covered enough to be recorded as finished: write the tests first — "
+            "they are supposed to exist before the code (TDD, step 1.2) — then record the new "
+            "number. A run that cannot reach the threshold returns to the probe, not to the "
+            "changelog."
+        )
+    if not command:
+        return (
+            f"`tested: {reported}%` cannot be verified: the contract names no "
+            "`Coverage command:`. Add one, or the number is a claim nobody checked (spec §0)."
+        )
+    return ""
+
+
+def _contract_text(ledger: Path) -> str:
+    """The project contract's contents, or an empty string when there is none.
+
+    Args:
+        ledger: Ledger being enforced.
+
+    Returns:
+        Contract text, empty when unreadable.
+    """
+    for base in [ledger.parent, *ledger.parents]:
+        candidate = base / CONTRACT_NAME_HINT
+        if candidate.is_file():
+            try:
+                return candidate.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return ""
+    return ""
+
+
+def _is_code_write(detail: str, ledger: Path, tool: str, *, dev_plugin: bool = False) -> bool:
+    """Decide whether a write changes behaviour, and so needs a hypothesis.
+
+    The rule is an explicit allow-list of what a run may write (§5.5), not "outside Test paths:".
+    That inference was the defect: it made logs, reports and documentation look like production
+    code, so a run could not record the evidence it exists to produce.
+
+    Order matters and is deliberate:
+
+    1. the ledger — allowed in every phase (invariant 31);
+    2. the plugin's own files — allowed in every phase (invariant 48);
+    3. the raw-dump directory and `logs/` — allowed in every phase (invariant 45);
+    4. prose and data — allowed in every phase (invariant 46);
+    5. tests — allowed in every phase: they are the measuring instrument (§1, step 1.2);
+    6. everything else — code, judged by the phase.
 
     Args:
         detail: Path or command from the classified call.
         ledger: Ledger being enforced.
         tool: Lowercased tool name for the diagnostic.
+        dev_plugin: When true, the skill tree is treated as a plugin file: the documented way to
+            develop the plugin with its own gate installed (invariant 47).
 
     Returns:
-        ``True`` when the write is outside the project's test paths and the ledger.
+        ``True`` when the write changes behaviour.
     """
     if not detail:
-        # A write with no identifiable target cannot be shown to be a test edit.
+        # A write with no identifiable target cannot be shown to be harmless.
         return True
 
-    if tool not in _SHELL_TOOLS:
-        if _addresses_ledger(detail, ledger):
-            return False
-        tests = _require_test_paths(ledger, tool)
-        normalized = detail.replace("\\", "/")
-        return not any(normalized.startswith(prefix) or f"/{prefix}" in normalized for prefix in tests)
+    if tool not in _SHELL_TOOLS and _addresses_ledger(detail, ledger):
+        return False
+    root = _project_of(ledger)
+    if _is_plugin_file(detail, root, dev_plugin=dev_plugin):
+        return False
+    if _is_raw_dump_write(detail, ledger, tool):
+        return False
+    if _is_doc_write(detail, ledger, root, tool):
+        return False
 
-    targets = _shell_write_targets(detail)
+    targets = _shell_write_targets(detail) if tool in _SHELL_TOOLS else [detail]
     if not targets:
-        # A write with no readable destination cannot be shown to be a test edit.
+        # A write with no readable destination cannot be shown to be harmless.
         return True
     if all(_addresses_ledger(target, ledger) for target in targets):
         return False
@@ -1844,6 +2209,78 @@ def _is_code_write(detail: str, ledger: Path, tool: str) -> bool:
             continue
         return True
     return False
+
+
+def _outside_project_targets(detail: str, ledger: Path, tool: str) -> list[str]:
+    """Write targets that fall outside the project the ledger belongs to.
+
+    Spec invariant 43: the plugin works inside the open project and its subdirectories, and
+    nowhere else. System directories are refused unconditionally — in every phase, including the
+    probe phase — because a fix belongs to the project, and a temporary file belongs in the
+    project's own dump directory rather than in `/tmp`. A person who needs a system file changed
+    does that themselves; the agent prints the command.
+
+    Args:
+        detail: Path or command from the classified call.
+        ledger: Ledger being enforced; its project is the boundary.
+        tool: Lowercased tool name.
+
+    Returns:
+        Targets outside the project, in command order. Empty when every target is inside.
+    """
+    root = _project_of(ledger)
+    targets = _shell_write_targets(detail) if tool in _SHELL_TOOLS else [detail]
+    outside: list[str] = []
+    for target in targets:
+        # A target taken from a command line may carry the shell's quoting; the path is inside.
+        cleaned = target.strip().strip("\"'`")
+        # A relative target is relative to the project, which is inside by definition.
+        candidate = Path(cleaned).expanduser()
+        if not candidate.is_absolute():
+            continue
+        resolved = _normalized(candidate)
+        if resolved == root or root in resolved.parents:
+            continue
+        outside.append(cleaned)
+    return outside
+
+
+def _project_of(ledger: Path) -> Path:
+    """The project directory a ledger belongs to.
+
+    The contract's own directory is the boundary, not the ledger's: a ledger may live in
+    `tasks/` or in `docs/bugs/`, and the ban is about the project.
+
+    Args:
+        ledger: Ledger being enforced.
+
+    Returns:
+        Resolved project directory.
+    """
+    for base in [ledger.parent, *ledger.parents]:
+        if (base / CONTRACT_NAME_HINT).is_file():
+            return _normalized(base)
+    return _normalized(ledger.parent)
+
+
+def _normalized(path: Path) -> Path:
+    """Resolve a path for comparison without requiring it to exist.
+
+    `Path.resolve` is not usable alone: a write target usually does not exist yet, and on macOS
+    a symlinked `/tmp` would compare unequal to `/private/tmp`. Resolving the parent chain and
+    re-attaching the name keeps the comparison stable for both cases.
+
+    Args:
+        path: Path as written.
+
+    Returns:
+        Absolute, symlink-resolved path.
+    """
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    try:
+        return absolute.resolve()
+    except OSError:
+        return absolute.parent.resolve() / absolute.name
 
 
 def _unblocks_setup(tool: str, args: dict[str, Any], root: Path) -> bool:
@@ -2045,6 +2482,14 @@ def main(argv: list[str] | None = None) -> int:
             "`Task/bug file:` pattern in the hook's working directory"
         ),
     )
+    parser.add_argument(
+        "--dev-plugin",
+        action="store_true",
+        help=(
+            "allow edits to the plugin's own skill tree (skills/bug-fixer/**). For developing "
+            "the plugin with its own gate installed; never part of a normal run (invariant 47)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -2086,7 +2531,7 @@ def main(argv: list[str] | None = None) -> int:
         # The message already ends with what to do; appending a generic "fill it in" would fit
         # placeholders and mislead here, where the field is filled and the project is the problem.
         _fail_closed(contract_problems[0].rstrip())
-    verdict = decide(ledger=ledger, tool=tool, args=tool_args)
+    verdict = decide(ledger=ledger, tool=tool, args=tool_args, dev_plugin=args.dev_plugin)
     _emit(verdict)
     return EXIT_ALLOW if verdict.allow else EXIT_DENY
 

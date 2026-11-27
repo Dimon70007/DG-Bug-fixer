@@ -49,6 +49,10 @@ CONTRACT_VERSION: Final[int] = 1
 #: nobody checked that the test command exists or that the search tools are callable.
 UNVERIFIED: Final[str] = "not yet"
 
+#: Spec §11a's own default for changed-lines coverage. A project may raise or lower it with
+#: `Min coverage:`; the number lives in the spec, not in a plugin constant that drifts from it.
+DEFAULT_MIN_COVERAGE: Final[int] = 90
+
 #: The value that means "this project has no test suite". Legal, and it changes what the phases can
 #: do: phase 1 cannot record a baseline and phase 4 cannot compare, so the run ends in BLOCKED.
 NO_SUITE: Final[str] = "none"
@@ -184,6 +188,34 @@ FIELD_POINTS: Final[dict[str, FieldRule]] = {
         required=False,
         names=_names(r"Raw dumps(?:\s+too large for the ledger)?"),
         accepts=_PATHLIKE,
+    ),
+    # §5.5 makes documentation writable in every phase, and the gate needs to know *where* it
+    # lives rather than inferring it from "not a test path". A detail of point 1 (where findings
+    # and records go), not a fifth point.
+    "Docs paths": FieldRule(
+        name="Docs paths",
+        point="ledger",
+        required=False,
+        names=_names(r"Docs paths?", r"Documentation paths?"),
+        accepts=_PATHLIKE,
+    ),
+    # §11a: the threshold for `CHANGELOG.md`. Optional — the spec's default is 90%, written as a
+    # field so a project can raise or lower it without editing the plugin.
+    "Min coverage": FieldRule(
+        name="Min coverage",
+        point="full_suite",
+        required=False,
+        names=_names(r"Min coverage", r"Minimum coverage", r"Coverage threshold"),
+        accepts=re.compile(r"^\d{1,3}%?$"),
+    ),
+    # §11a: the command that produces the changed-lines percentage. Optional; without it the
+    # gate cannot check a `tested:` claim and says so rather than guessing.
+    "Coverage command": FieldRule(
+        name="Coverage command",
+        point="full_suite",
+        required=False,
+        names=_names(r"Coverage command", r"Coverage"),
+        accepts=_COMMANDLIKE,
     ),
     # Not one of the four points: metadata about the file itself. Read by `doctor` and the gate,
     # never by the skill's steps.
@@ -342,6 +374,52 @@ def test_paths(text: str) -> list[str]:
     return [item.strip().strip("`") for item in raw.split(",") if item.strip()]
 
 
+def docs_paths(text: str) -> list[str]:
+    """Read the documentation prefixes the gate treats as data rather than code.
+
+    Spec §5.5: `.md`, `.txt` and friends are writable in every phase. The contract names *where*
+    they live, so the gate does not have to infer it — and a project that keeps prose somewhere
+    unexpected can say so instead of having it refused.
+
+    Args:
+        text: Full contract contents.
+
+    Returns:
+        Prefixes in the order written; empty when the field is missing.
+    """
+    raw = read_field(text, "Docs paths")
+    if not raw:
+        return []
+    return [item.strip().strip("`") for item in raw.split(",") if item.strip()]
+
+
+def min_coverage(text: str) -> int:
+    """The changed-lines coverage a `CHANGELOG.md` entry must reach (§11a).
+
+    Args:
+        text: Full contract contents.
+
+    Returns:
+        The threshold as a percentage. ``DEFAULT_MIN_COVERAGE`` when the field is absent — the
+        spec's own default, not a guess about this project.
+    """
+    raw = read_field(text, "Min coverage").strip().rstrip("%")
+    return int(raw) if raw.isdigit() else DEFAULT_MIN_COVERAGE
+
+
+def coverage_command(text: str) -> str:
+    """The command that reports coverage of changed lines, if the project names one.
+
+    Args:
+        text: Full contract contents.
+
+    Returns:
+        The command, or an empty string. Empty is meaningful: the gate then says it cannot verify
+        a `tested:` claim rather than accepting it unverified (§0).
+    """
+    return read_field(text, "Coverage command")
+
+
 def verified_by(text: str) -> str:
     """Who confirmed the contract's derived values, if anyone.
 
@@ -497,8 +575,8 @@ def warnings(text: str) -> list[str]:
 
 #: Sections a generated contract must carry, with the fields each teaches.
 _GENERATED_SECTIONS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
-    ("Ledger", ("Task/bug file", "Raw dumps")),
-    ("Tests", ("Full suite", "Test paths")),
+    ("Ledger", ("Task/bug file", "Raw dumps", "Docs paths")),
+    ("Tests", ("Full suite", "Test paths", "Coverage command", "Min coverage")),
     ("Search", ("Search",)),
     ("Extra prohibitions for this project", ("Prohibitions",)),
 )
@@ -681,16 +759,143 @@ def _find_dirs(project: Path, names: tuple[str, ...]) -> list[str]:
 def _detect_test_paths(project: Path) -> str:
     """Test directories, as the comma-separated value the contract expects.
 
+    A directory is accepted only when it **contains test files**, not because its name is
+    plausible. Measured defect (2026-11-27): `docs/superpowers/specs/` landed in `Test paths:`
+    because the walk looks for directories called `specs` — and the contract then declared prose
+    to be tests, which both opened a write path the phase ban was meant to close and left every
+    real test outside it.
+
     Args:
         project: Project directory.
 
     Returns:
         Prefixes ending in ``/``, or an empty string when none was found.
     """
-    dirs = _find_dirs(project, _TEST_DIR_NAMES)
+    dirs = [path for path in _find_dirs(project, _TEST_DIR_NAMES) if _is_test_dir(project, path)]
     if not dirs:
         return ""
     return ", ".join(f"{path}/" for path in dirs)
+
+
+#: Directory names that mean "tests" on their own. A project that has `tests/` has tests, even
+#: before the first file is written, and `init` running in a fresh checkout must still fill the
+#: field — refusing it would send the agent to a placeholder for a directory that is obviously
+#: right.
+_STRONG_TEST_DIRS: Final[frozenset[str]] = frozenset({"tests", "test", "__tests__"})
+
+#: Directory names that *suggest* tests and are proven by content. Measured defect (2026-11-27):
+#: `docs/superpowers/specs/` was accepted because the walk looks for directories called `specs`,
+#: and the contract then declared prose to be tests — opening a write path the phase ban was
+#: meant to close and leaving every real test outside it.
+_WEAK_TEST_DIRS: Final[frozenset[str]] = frozenset({"spec", "specs"})
+
+#: File-name shapes that identify a test in any language the plugin has met. The spec asks for
+#: `test_*`, `*test.*`, `*.test.*` and `*.spec.*`; the extra `*_test.*` and `conftest.py` cover Go
+#: and pytest, where a directory can hold tests without a single `test_` file name.
+TEST_FILE_PATTERNS: Final[tuple[str, ...]] = (
+    "test_*",
+    "*_test.*",
+    "*test.*",
+    "*.test.*",
+    "*.spec.*",
+    "conftest.py",
+)
+
+
+def _holds_tests(directory: Path) -> bool:
+    """Whether a directory actually contains test files.
+
+    Args:
+        directory: Candidate directory.
+
+    Returns:
+        ``True`` when a direct or nested child matches :data:`TEST_FILE_PATTERNS`.
+    """
+    try:
+        for candidate in directory.rglob("*"):
+            if candidate.is_file() and any(
+                candidate.match(pattern) for pattern in TEST_FILE_PATTERNS
+            ):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _is_test_dir(project: Path, relative: str) -> bool:
+    """Whether a candidate directory should be offered as a test path.
+
+    Args:
+        project: Project directory.
+        relative: Candidate, relative to the project.
+
+    Returns:
+        ``True`` for a directory whose name already means "tests", or one whose name merely
+        suggests it and whose contents prove it.
+    """
+    name = Path(relative).name
+    if name in _STRONG_TEST_DIRS:
+        return True
+    if name in _WEAK_TEST_DIRS:
+        return _holds_tests(project / relative)
+    return False
+
+
+def _detect_docs_paths(project: Path) -> str:
+    """Where this project keeps its prose, as the contract's ``Docs paths:`` value.
+
+    A fact about the filesystem, not a guess: a directory is offered only when it holds markdown.
+    ``README.md`` and other root-level prose are always included, because they exist in nearly
+    every project and a doc write that is refused at the root would be refused everywhere.
+
+    Args:
+        project: Project directory.
+
+    Returns:
+        Comma-separated prefixes, ``.`` first when the root holds markdown.
+    """
+    roots: list[str] = []
+    try:
+        if any(project.glob("*.md")):
+            roots.append(".")
+    except OSError:
+        pass
+    for name in ("docs", "doc", "documentation", "wiki"):
+        directory = project / name
+        if directory.is_dir():
+            roots.append(f"{name}/")
+    return ", ".join(roots) if roots else "<comma-separated prefixes, e.g. docs/>"
+
+
+#: Files that prove a coverage tool is configured. Without one, `tested:` cannot be checked and
+#: the gate says so instead of trusting the number (§11a, §0).
+_COVERAGE_MARKERS: Final[tuple[tuple[str, str], ...]] = (
+    ("pyproject.toml", "coverage report --show-missing"),
+    ("setup.cfg", "coverage report --show-missing"),
+    (".coveragerc", "coverage report --show-missing"),
+)
+
+
+def _detect_coverage_command(project: Path) -> str:
+    """A coverage command the project can actually run, or a placeholder.
+
+    Args:
+        project: Project directory.
+
+    Returns:
+        The command, or a visible placeholder when nothing in the project proves one.
+    """
+    for marker, command in _COVERAGE_MARKERS:
+        path = project / marker
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "coverage" in text or marker == ".coveragerc":
+            return command
+    return "<the command that reports changed-line coverage, e.g. coverage report>"
 
 
 def _detect_ledger_pattern(project: Path) -> str:
@@ -857,8 +1062,11 @@ def scaffold(project: Path) -> str:
     placeholders: dict[str, str] = {
         "Task/bug file": ledger,
         "Raw dumps": dumps,
+        "Docs paths": _detect_docs_paths(project),
         "Full suite": suite,
         "Test paths": test_paths,
+        "Coverage command": _detect_coverage_command(project),
+        "Min coverage": str(DEFAULT_MIN_COVERAGE),
         "Search": default_search(project),
         "Prohibitions": "",
     }

@@ -31,3 +31,14 @@ target-version = "py39"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["E501"]
+
+[tool.coverage.run]
+# The suite exercises the gate and the CLI through `subprocess`, which a plain `--cov` run cannot
+# see: every `main()` path looked uncovered while being tested. Patch mode makes the child
+# processes report their own coverage, so a changed-line number means what §11a says it means.
+patch = ["subprocess"]
+parallel = true
+source = ["hooks", "lib"]
+
+[tool.coverage.report]
+omit = ["tests/*"]

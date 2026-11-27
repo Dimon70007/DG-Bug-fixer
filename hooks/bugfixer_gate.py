@@ -343,6 +343,24 @@ class AmbiguousMarkerError(RuntimeError):
     """A marker whose value cannot be determined without guessing."""
 
 
+class LedgerNotFoundError(RuntimeError):
+    """A project contract declares a run, but the ledger it points at cannot be found.
+
+    Raised rather than returning ``None``: "no run is under way" and "I was told there is a run
+    and cannot find it" are different answers, and only the first may allow a write. Answering
+    ``None`` to both is how the gate turned itself off without a word (spec §0).
+    """
+
+
+class ContractMissingError(RuntimeError):
+    """No project contract anywhere above the project directory.
+
+    The plugin cannot do its job without one: the agent would not know the test command, where
+    findings go, or what the project forbids (spec §6 phase 0). Raised so the harness reports a
+    refusal with a recommendation, rather than leaving a silent gate that protects nothing.
+    """
+
+
 def _allow(note: str = "") -> Verdict:
     """Return an allow verdict, optionally with a note for stderr.
 
@@ -586,24 +604,49 @@ def _project_root(event: dict[str, Any]) -> Path:
 #: How many directory levels up to look for the contract.
 _CONTRACT_SEARCH_DEPTH: Final[int] = 4
 
+#: The file name, in one place so every message can name it without repeating the literal.
+CONTRACT_NAME_HINT: Final[str] = "bug-fixer.project.md"
+
 
 def discover_ledger(root: Path) -> Path | None:
     """Locate the ledger from the project contract, without an explicit path.
+
+    Two failures, two different pieces of advice, because the fixes differ:
+
+    * no contract anywhere above ``root`` → :class:`ContractMissingError`: the plugin has
+      nothing to work from, so it asks for `bugfixer init`;
+    * a contract that names no usable pattern, matches nothing, or matches several equally new
+      files → :class:`LedgerNotFoundError`: the contract exists, and it is incomplete or
+      ambiguous.
+
+    ``None`` is not returned: a plugin whose job is to constrain the agent cannot constrain it
+    without being told what to constrain (spec §0, §6 phase 0).
 
     Args:
         root: Directory to start from (usually the project root).
 
     Returns:
-        The newest file matching the contract's ``Task/bug file:`` pattern, or
-        ``None`` when the contract is absent, names no usable pattern, or the match
-        is ambiguous.
+        The newest file matching the contract's ``Task/bug file:`` pattern.
+
+    Raises:
+        ContractMissingError: When there is no contract at or above ``root``.
+        LedgerNotFoundError: When a contract exists but yields no single ledger.
     """
     contract = _find_contract(root)
     if contract is None:
-        return None
+        raise ContractMissingError(
+            f"no {CONTRACT_NAME_HINT} at or above {root}. Without it the agent would not know "
+            "the test command, where findings go, or what this project forbids, so no run can "
+            "start. Run `bugfixer init` to write a starting contract, fill in its `<…>` "
+            "placeholders, then confirm with `bugfixer doctor`."
+        )
     pattern = _contract_ledger_pattern(contract)
     if not pattern:
-        return None
+        raise LedgerNotFoundError(
+            f"{contract} declares a run but names no usable ledger. Add a line "
+            "`Task/bug file: <path or glob>`, for example `Task/bug file: tasks/TASK-*.md`, "
+            "then run `bugfixer doctor` to confirm the gate can find it."
+        )
 
     matches: list[Path] = []
     for base in (root, contract.parent):
@@ -612,13 +655,23 @@ def discover_ledger(root: Path) -> Path | None:
     # dedupe by resolved path, or the mtime tie-break below would see a false tie.
     files = sorted({match.resolve() for match in matches if match.is_file()})
     if not files:
-        return None
+        raise LedgerNotFoundError(
+            f"{contract} points at `{pattern}`, which matches no file under {root}. Either the "
+            "task file does not exist yet — create it, because the ledger is where the work is "
+            "recorded — or the pattern is wrong. `bugfixer doctor` reports the pattern the gate "
+            "actually reads."
+        )
     newest = max(files, key=lambda match: match.stat().st_mtime)
     # Two *different* files with the same mtime cannot be ordered; picking one would
     # attach the run to the wrong bug.
     tied = [match for match in files if match.stat().st_mtime == newest.stat().st_mtime]
     if len(tied) > 1:
-        return None
+        names = ", ".join(sorted(match.name for match in tied))
+        raise LedgerNotFoundError(
+            f"`{pattern}` matches several files with the same timestamp ({names}), so the gate "
+            "cannot tell which bug is being fixed. Touch the one you are working on so it is "
+            "newest, or name it explicitly with `--ledger <path>`."
+        )
     return newest
 
 
@@ -1445,7 +1498,14 @@ def _decide(
         The verdict for this call.
     """
     if ledger is None:
-        return _allow("no bug-fixer ledger found; gate inactive")
+        return _deny(
+            "no project contract found, so there is nothing to enforce: the agent would not "
+            "know which command runs the tests, where findings go, or what this project "
+            "forbids. Run `bugfixer init` to write a starting contract, fill in its `<…>` "
+            "placeholders, and confirm with `bugfixer doctor` (spec §6 phase 0). If this "
+            "project does not use bug-fixer at all, remove the hook instead of leaving it "
+            "here — a gate that cannot be configured protects nothing."
+        )
 
     text = ledger.read_text(encoding="utf-8", errors="replace")
     if legacy_ledger(text):
@@ -1777,6 +1837,125 @@ def _is_code_write(detail: str, ledger: Path, tool: str) -> bool:
     return False
 
 
+def _unblocks_setup(tool: str, args: dict[str, Any], root: Path) -> bool:
+    """Whether this call is setup work that a missing contract must not block.
+
+    Two writes keep the refusal from becoming a lockout:
+
+    * **the contract itself** — otherwise the gate demands a file and refuses the write that
+      creates it;
+    * **the plugin's own installed tree** — the documented install copies the skill into the
+      project, and a project that has not been initialised yet is exactly where that happens.
+
+    Everything else is refused: a gate that opened arbitrary writes "while setting up" would be
+    the silent gate again under another name.
+
+    Args:
+        tool: Lowercased tool name.
+        args: Tool arguments.
+        root: Project directory.
+
+    Returns:
+        ``True`` when every write target is one of those two.
+    """
+    try:
+        is_write, detail = _is_write_attempt(tool, args)
+    except (UnknownToolError, UnreadableCommandError):
+        return False
+    if not is_write or not detail:
+        return False
+
+    targets = _shell_write_targets(detail) if tool in _SHELL_TOOLS else [detail]
+    if not targets:
+        return False
+    return all(_is_setup_target(target, root) for target in targets)
+
+
+def _is_setup_target(target: str, root: Path) -> bool:
+    """Whether one write target is the contract or the plugin's installed tree.
+
+    Args:
+        target: Path from the tool call, absolute or relative to the project.
+        root: Project directory.
+
+    Returns:
+        ``True`` when the target is setup rather than work.
+    """
+    path = Path(target).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    parts = path.parts
+
+    if path.name == CONTRACT_NAME_HINT:
+        return True
+    # The installer writes into a skills directory of its own choosing per harness; matching the
+    # directory names keeps this independent of which harness is being installed for.
+    if "skills" in parts and "bug-fixer" in parts:
+        return True
+    # Creating the ledger itself: the contract names where findings go, and until that file
+    # exists there is no run to enforce. Only a path matching the contract's own pattern counts,
+    # so this cannot be used to write arbitrary files in the project.
+    contract = _find_contract(root)
+    if contract is None:
+        return False
+    pattern = _contract_ledger_pattern(contract)
+    if not pattern:
+        return False
+    return _matches_ledger_pattern(path, pattern)
+
+
+def _matches_ledger_pattern(path: Path, pattern: str) -> bool:
+    """Whether a path is the file the contract names as its ledger.
+
+    Args:
+        path: Candidate file, absolute.
+        pattern: Glob from the contract's ``Task/bug file:``.
+
+    Returns:
+        ``True`` when the name matches the glob and the directory is where the pattern points.
+    """
+    from fnmatch import fnmatch  # noqa: PLC0415 — one call site
+
+    if not fnmatch(path.name, Path(pattern).name):
+        return False
+    pattern_dir = Path(pattern).parent
+    if not pattern_dir.parts:
+        return True
+    return pattern_dir.as_posix() in path.as_posix()
+
+
+def _contract_placeholders(root: Path) -> list[str]:
+    """Problems in the contract's *content*: fields that are still template placeholders.
+
+    A contract can be found and still be unusable: every required field present, every value
+    ``<e.g. …>``. The gate would then enforce rules the agent cannot follow, so this counts as
+    no contract at all, with the same advice.
+
+    Args:
+        root: Project directory.
+
+    Returns:
+        Refusal messages, empty when the contract is complete.
+    """
+    contract = _find_contract(root)
+    if contract is None:
+        return []
+    text = contract.read_text(encoding="utf-8", errors="replace")
+    problems: list[str] = []
+    for name in ("Full suite", "Test paths", "Task/bug file", "Search"):
+        match = re.search(
+            rf"^[ \t>*-]*{re.escape(name)}[ \t]*:[ \t]*(.+)$", text, re.MULTILINE | re.IGNORECASE
+        )
+        if match is None:
+            continue
+        if match.group(1).strip().startswith("<"):
+            problems.append(
+                f"`{name}:` in {contract.name} is still a template placeholder "
+                f"({match.group(1).strip()}). "
+            )
+    return problems
+
+
 def _read_event() -> dict[str, Any]:
     """Read the harness payload from stdin.
 
@@ -1831,7 +2010,20 @@ def main(argv: list[str] | None = None) -> int:
     except UnreadablePayloadError as exc:
         _fail_closed(f"cannot read the hook payload: {exc}")
 
-    ledger = _resolve_ledger(event, args.ledger)
+    tool = _tool_name(event)
+    tool_args = _tool_input(event)
+
+    try:
+        ledger = _resolve_ledger(event, args.ledger)
+    except (ContractMissingError, LedgerNotFoundError) as exc:
+        # A project that cannot be configured is not "no run under way": the plugin has been
+        # wired here and cannot do its job, so it says why and stops (spec §0). Two writes stay
+        # open, because refusing them would make the refusal a lockout: creating the contract,
+        # and the installer writing its own tree.
+        if _unblocks_setup(tool, tool_args, _project_root(event)):
+            _emit(Verdict(allow=True))
+            return EXIT_ALLOW
+        _fail_closed(str(exc))
     if args.ledger and ledger is None:
         # The adapter names a ledger explicitly, so a missing one is a broken
         # install, not "no run active". Treating it as inactive disables the gate
@@ -1840,7 +2032,17 @@ def main(argv: list[str] | None = None) -> int:
             f"--ledger {args.ledger} does not exist; the adapter is pointed at a file "
             "that is not there"
         )
-    verdict = decide(ledger=ledger, tool=_tool_name(event), args=_tool_input(event))
+
+    # A contract whose fields are still `<…>` is a contract nobody has read: the agent would be
+    # following instructions that say "<e.g. make test>". Checked here rather than in discover,
+    # because it is about the contract's content, not about finding the ledger.
+    contract_problems = _contract_placeholders(_project_root(event))
+    if contract_problems:
+        if _unblocks_setup(tool, tool_args, _project_root(event)):
+            _emit(Verdict(allow=True))
+            return EXIT_ALLOW
+        _fail_closed(contract_problems[0] + " Fill it in, then run `bugfixer doctor`.")
+    verdict = decide(ledger=ledger, tool=tool, args=tool_args)
     _emit(verdict)
     return EXIT_ALLOW if verdict.allow else EXIT_DENY
 

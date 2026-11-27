@@ -66,7 +66,7 @@ def _doctor(project: Path) -> int:
     resolved = _resolve_ledger(project)
     if resolved is None:
         print(
-            "  ledger         : none matched yet — no run is active, so the gate stays inert",
+            "  ledger         : not matched yet — no run is active, so the gate stays inert",
         )
     else:
         print(f"  ledger         : {resolved}")
@@ -91,7 +91,50 @@ def _resolve_ledger(project: Path) -> Path | None:
         sys.path.insert(0, str(hooks))
     import bugfixer_gate as gate  # noqa: PLC0415 — imported lazily: doctor is stdlib-cheap
 
-    return gate.discover_ledger(project.resolve())
+    try:
+        return gate.discover_ledger(project.resolve())
+    except gate.LedgerNotFoundError as exc:
+        # Reported as a problem rather than a traceback: doctor exists to tell a human what to
+        # fix, and a stack trace is the same information with the advice taken out.
+        print(f"  ledger         : not resolvable", file=sys.stderr)
+        print(f"  {exc}", file=sys.stderr)
+        return None
+
+
+def _init(project: Path, *, force: bool) -> int:
+    """Write a starting contract for a project.
+
+    Args:
+        project: Project directory to scaffold.
+        force: Replace an existing contract. Off by default: a filled contract holds decisions
+            that must not be destroyed by a repeated command.
+
+    Returns:
+        ``0`` when the file was written, ``2`` when it was refused.
+    """
+    target = project / contract.CONTRACT_NAME
+    if target.exists() and not force:
+        print(
+            f"{target} already exists. It holds this project's decisions, so it is not "
+            "replaced by a default. Edit it and run `bugfixer doctor`; pass --force only if "
+            "you really mean to start again.",
+            file=sys.stderr,
+        )
+        return EXIT_REFUSED
+
+    target.write_text(contract.scaffold(project), encoding="utf-8")
+    print(f"{target}: written")
+    remaining = contract.problems(target.read_text(encoding="utf-8"))
+    if remaining:
+        print(f"  {len(remaining)} field(s) still need a value:", file=sys.stderr)
+        for problem in remaining:
+            print(f"    - {problem}", file=sys.stderr)
+        print(
+            "  Fill them in, then run `bugfixer doctor` until it exits 0 — the gate refuses "
+            "work until then.",
+            file=sys.stderr,
+        )
+    return EXIT_OK
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -105,9 +148,23 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(
         prog="bugfixer",
-        description="bug-fixer plugin commands. `doctor` validates the project contract.",
+        description="bug-fixer plugin commands: `init` creates the project contract, "
+        "`doctor` validates it.",
     )
     sub = parser.add_subparsers(dest="verb", required=True)
+
+    init = sub.add_parser("init", help="write a starting project contract")
+    init.add_argument(
+        "--project",
+        default=".",
+        help="project directory to scaffold (default: the current directory)",
+    )
+    init.add_argument(
+        "--force",
+        action="store_true",
+        help="replace an existing contract; it holds this project's decisions",
+    )
+
     doctor = sub.add_parser("doctor", help="validate the project contract")
     doctor.add_argument(
         "--project",
@@ -116,11 +173,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.verb == "doctor":
+    if args.verb in {"init", "doctor"}:
         project = Path(args.project).expanduser()
         if not project.is_dir():
             print(f"bugfixer: --project {project} is not a directory", file=sys.stderr)
             return EXIT_REFUSED
+
+    if args.verb == "init":
+        return _init(project, force=args.force)
+    if args.verb == "doctor":
         return _doctor(project)
     parser.error(f"unknown verb {args.verb!r}")
     return EXIT_REFUSED

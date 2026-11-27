@@ -36,6 +36,16 @@ from typing import Any, Final, NoReturn
 #: This file lives in the skill directory, so the source is unambiguous.
 SKILL_DIR: Final[Path] = Path(__file__).resolve().parent
 
+#: The contract schema is the same one `bugfixer init` uses, so an install-time scaffold and an
+#: explicit one cannot diverge.
+if str(SKILL_DIR / "lib") not in sys.path:
+    sys.path.insert(0, str(SKILL_DIR / "lib"))
+
+from bugfixer import contract as contract_module  # noqa: E402
+
+#: The contract file name, taken from the schema so there is one literal in the plugin.
+CONTRACT_NAME: Final[str] = contract_module.CONTRACT_NAME
+
 
 def _skill_id() -> str:
     """Read the skill id from its own ``SKILL.md`` frontmatter.
@@ -628,6 +638,7 @@ def install(plan: InstallPlan, *, dry_run: bool) -> list[Path]:
 
     if dry_run:
         _write_project_hooks(plan, dry_run=True)
+        _seed_contract(plan, dry_run=True)
         return stale
 
     for relative in files:
@@ -636,9 +647,37 @@ def install(plan: InstallPlan, *, dry_run: bool) -> list[Path]:
         _copy_file(plan.source / relative, target)
 
     _write_project_hooks(plan, dry_run=False)
+    _seed_contract(plan, dry_run=False)
     _clamp_tree(plan.destination)
 
     return stale
+
+
+def _seed_contract(plan: InstallPlan, *, dry_run: bool) -> None:
+    """Write a starting contract into a project that has none.
+
+    A project install wires the gate, and the gate refuses work without a contract. Leaving the
+    project without one would therefore mean "installed, and now everything is refused" — the
+    plugin would be broken out of the box by its own safety rule. So the install writes the same
+    scaffold `bugfixer init` writes.
+
+    An existing contract is never touched: it holds the project's decisions, and a re-install is
+    not a reason to discard them.
+
+    Args:
+        plan: Target descriptor; only project-scope plans seed a contract.
+        dry_run: When true, report the action without writing.
+    """
+    if plan.project is None:
+        return
+    target = plan.project / CONTRACT_NAME
+    if target.exists():
+        print(f"    keep {CONTRACT_NAME} (already present; edit it and run `bugfixer doctor`)")
+        return
+    print(f"    {'would write' if dry_run else 'write'} {CONTRACT_NAME} (fill in the `<…>` fields)")
+    if dry_run:
+        return
+    target.write_text(contract_module.scaffold(plan.project), encoding="utf-8")
 
 
 def _strip_hook_entries(hook_file: Path, marker: str, *, dry_run: bool) -> bool:

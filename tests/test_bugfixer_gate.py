@@ -293,9 +293,18 @@ def test_the_gate_reads_only_the_project_contract(gate, tmp_path: Path) -> None:
     assert gate._test_paths(ledger) == ["tests/"]
 
 
-def test_no_ledger_allows_everything(gate) -> None:
-    """The gate must be inert outside a bug-fixer run, or it gets uninstalled."""
-    assert _verdict(gate, None, "write", {"file_path": "src/x.py"}).allow
+def test_no_ledger_refuses_and_says_how_to_start(gate) -> None:
+    """A wired gate with no contract refuses: it has nothing to enforce.
+
+    The old rule — "no run found, allow everything" — made a missing contract look exactly like
+    a healthy project while the plugin protected nothing. A plugin whose job is to constrain the
+    agent cannot do that job without being told what to constrain, so the refusal names the
+    command that creates the contract (spec §6 phase 0), and a project that wants no plugin
+    removes the hook instead.
+    """
+    verdict = _verdict(gate, None, "write", {"file_path": "src/x.py"})
+    assert not verdict.allow
+    assert "bugfixer init" in verdict.reason
 
 
 # --- invariant 31: the task file is where the work is recorded ---------------
@@ -475,25 +484,32 @@ def test_invalid_stdin_json_denies_instead_of_allowing(tmp_path: Path) -> None:
 
 def test_missing_explicit_ledger_denies(tmp_path: Path) -> None:
     """``--ledger`` pointing at nothing is a broken install, not "no run active"."""
+    (tmp_path / "bug-fixer.project.md").write_text(
+        "Task/bug file: tasks/TASK-*.md\nFull suite: make test\nTest paths: tests/\n",
+        encoding="utf-8",
+    )
     result = subprocess.run(
         [sys.executable, str(_GATE), "--ledger", str(tmp_path / "absent.md")],
         input=json.dumps({"tool_name": "Write", "tool_input": {"file_path": "src/x.py"}}),
         text=True,
         capture_output=True,
         check=False,
+        cwd=str(tmp_path),
     )
     assert result.returncode == 2
     assert "does not exist" in json.loads(result.stdout)["agent_message"]
 
 
-def test_no_ledger_in_payload_still_allows(gate) -> None:
-    """The inert-outside-a-run behaviour is deliberate and must survive.
+def test_no_ledger_in_payload_is_refused_for_the_contract(gate) -> None:
+    """With no ledger the refusal is about the missing contract, not about the tool name.
 
-    Without it the gate denies every tool call in every repository and gets
-    uninstalled within a day. The distinction is: *no run* allows, *unknown during a
-    run* denies.
+    The agent has to learn the thing that actually blocks it: told only "unknown tool", it would
+    ask for a tool to be added to the gate, which changes nothing.
     """
-    assert _verdict(gate, None, "frobnicate", {}).allow
+    verdict = _verdict(gate, None, "frobnicate", {})
+    assert not verdict.allow
+    assert "contract" in verdict.reason.lower()
+    assert "bugfixer init" in verdict.reason
 
 
 def test_attempt_marker_ignores_prose_and_tables(gate) -> None:
@@ -530,16 +546,26 @@ def test_cli_exit_codes_and_json(project: Path) -> None:
 
 
 def test_cli_empty_stdin_does_not_crash(tmp_path: Path) -> None:
-    """A harness glitch must not turn into a stack trace."""
+    """A harness glitch must not turn into a stack trace.
+
+    With a usable contract in place the empty payload is an ordinary tool-less call and the gate
+    answers normally; without one it refuses, and either way the answer is JSON, not a traceback.
+    """
+    (tmp_path / "bug-fixer.project.md").write_text(
+        "Task/bug file: tasks/TASK-*.md\nFull suite: make test\nTest paths: tests/\n",
+        encoding="utf-8",
+    )
     result = subprocess.run(
         [sys.executable, str(_GATE)],
         input="",
         text=True,
         capture_output=True,
         check=False,
+        cwd=str(tmp_path),
     )
-    assert result.returncode == 0
-    assert json.loads(result.stdout)["permission"] == "allow"
+    assert "Traceback" not in result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["permission"] in {"allow", "deny"}
 
 
 def test_state_cli_roundtrip(project: Path) -> None:

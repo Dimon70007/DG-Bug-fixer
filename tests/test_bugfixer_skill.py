@@ -465,8 +465,12 @@ def test_decline_is_recorded_where_a_future_reader_will_find_it() -> None:
     rule = text[text.index("## Никогда не пропускать молча"):text.index("## Вызов скилла")]
     assert "упасть" in rule or "deny" in rule
     assert "неотличим" in rule, "the rule must explain why silence is the problem"
-    # The deliberate exception has to be named, or the rule reads as "deny everything".
-    assert "инертность" in rule
+    # No silent exception: the rule used to name "deliberate inertness outside a run", which
+    # meant a missing contract allowed everything. The replacement must say what to do instead,
+    # or the rule reads as unenforceable and gets ignored.
+    assert "инертность" not in rule, "the skill still promises a silent exception"
+    assert "нет контракта" in rule, "the skill does not say what happens without a contract"
+    assert "bugfixer init" in rule, "the skill does not say how to create the contract"
     # And the testing half: a test that cannot fail proves nothing.
     assert "предыдущей" in rule
 

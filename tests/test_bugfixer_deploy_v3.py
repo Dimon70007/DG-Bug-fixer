@@ -246,14 +246,26 @@ def test_gate_discovers_the_ledger_from_the_contract(project: Path) -> None:
     assert found.name == "TASK-100.md"
 
 
-def test_gate_returns_nothing_when_the_contract_is_absent(tmp_path: Path) -> None:
-    """No contract means no run this gate can prove — inert, not guessing."""
+def test_gate_refuses_loudly_when_the_contract_is_absent(tmp_path: Path) -> None:
+    """No contract means no run this gate can prove — and saying so is the point.
+
+    Returning ``None`` made "I was wired here by mistake" indistinguishable from "no bug-fixer
+    run is active", which is how a missing contract used to allow every write. The exception
+    carries the command that creates one.
+    """
     gate = _load("bugfixer_gate_portable2", _SKILL / "hooks" / "bugfixer_gate.py")
-    assert gate.discover_ledger(tmp_path) is None
+    with pytest.raises(gate.ContractMissingError) as excinfo:
+        gate.discover_ledger(tmp_path)
+    assert "bugfixer init" in str(excinfo.value)
 
 
-def test_gate_returns_nothing_on_an_ambiguous_match(tmp_path: Path) -> None:
-    """Two equally new ledgers would attach the run to an arbitrary bug."""
+def test_gate_refuses_an_ambiguous_match_with_both_names(tmp_path: Path) -> None:
+    """Two equally new ledgers would attach the run to an arbitrary bug, so the gate stops.
+
+    It used to return ``None`` here, which ``decide`` read as "no run under way" and allowed
+    every write. Guessing which bug is being fixed is wrong, and so is silence: the operator
+    gets both candidates and the way to choose (spec §0).
+    """
     tasks = tmp_path / "tasks"
     tasks.mkdir()
     (tmp_path / "bug-fixer.project.md").write_text(
@@ -265,7 +277,11 @@ def test_gate_returns_nothing_on_an_ambiguous_match(tmp_path: Path) -> None:
         os.utime(path, (1_700_000_000, 1_700_000_000))
 
     gate = _load("bugfixer_gate_portable3", _SKILL / "hooks" / "bugfixer_gate.py")
-    assert gate.discover_ledger(tmp_path) is None
+    with pytest.raises(gate.LedgerNotFoundError) as excinfo:
+        gate.discover_ledger(tmp_path)
+    message = str(excinfo.value)
+    assert "TASK-1.md" in message and "TASK-2.md" in message
+    assert "--ledger" in message
 
 
 def test_gate_prefers_the_newest_ledger(tmp_path: Path) -> None:

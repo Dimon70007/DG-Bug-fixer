@@ -1,0 +1,550 @@
+## test_bugfixer_changed_coverage_v3.py
+test_a_python_file_without_a_coverage_record_counts_as_missed | The `bin/bugfixer` lesson: absent from the report is untested, not exempt.
+test_a_file_coverage_cannot_measure_is_left_out_of_the_denominator | A shell wrapper is not untested; it is unmeasurable by `coverage.py`.
+test_a_missing_python_file_is_not_excused_by_its_suffix | The rule is "coverage cannot measure it", not ".sh is fine" — a name is not a guarantee.
+## test_bugfixer_cli_v3.py
+test_the_entry_point_offers_every_verb_a_run_calls | `--help` is the inventory: a verb missing here has no supported way in.
+test_the_verifier_is_reachable_and_still_reports_honestly | `README` sends an operator here to check the wiring; a missing verb breaks that step.
+test_gate_returns_the_same_verdict_as_the_gate_script | DoD-4's regression: the same payload must produce the same decision.
+test_gate_accepts_the_explicit_ledger_and_dev_plugin_flags | Both flags exist on the script; a wrapper that drops them changes the verdict.
+test_state_advances_the_run_through_the_cli | `bugfixer state` must own the journal, or the phase stays in the script nobody calls.
+test_state_lists_the_edges_and_reads_the_state | Reading the run and listing the edges are the two calls the skill names most often.
+test_state_refuses_a_value_outside_the_machine | A refusal is exit `2`; a wrapper that swallows it would look like success.
+test_secrets_scans_a_file_and_the_diff | Step 4.6a names this call; it has to be reachable, and to keep its exit codes.
+test_a_broken_plugin_tree_is_a_clear_refusal_not_a_traceback | A missing hook module is an install defect; the agent must read that, not a stack trace.
+test_a_project_that_is_not_a_directory_is_refused | `--project` naming a file must be refused by name, not crash on `is_dir()`.
+test_the_wrapper_forwards_gate_flags | `--dev-plugin` is documented, so the wrapper a harness calls must be able to pass it.
+test_the_wrapper_still_passes_the_exit_code_through | A wrapper that swallows `2` turns a refusal into a permission.
+test_the_phase_one_refusal_names_a_command_that_exists | The agent reads this text while blocked; a path that resolves nowhere wastes the turn.
+test_the_journal_refusal_names_the_plugin_as_the_writer_and_a_runnable_command | Invariant 33's refusal is read by an agent that just tried to write history.
+test_dev_plugin_allows_a_shell_write_inside_the_plugin_tree | Invariant 47 names the tree, not the tool that changes it.
+test_dev_plugin_still_refuses_a_shell_write_to_project_code | The neighbour case: a flag that opens the tree must not open the project.
+test_without_the_flag_a_shell_write_to_the_plugin_is_refused | Invariant 47's default: during a run the plugin tree is code like any other.
+test_the_documentation_carries_no_plugin_relative_script_path | `python3 hooks/…` resolves only when cwd is the plugin; the agent's cwd is the project.
+test_every_command_the_documentation_names_is_a_verb_of_the_entry_point | A doc that invents a verb sends the agent into an argparse error at the worst moment.
+test_the_documentation_names_the_gate_and_the_state_machine_through_the_cli | Both files must mention the two verbs a run depends on, or their absence is invisible.
+## test_bugfixer_contract_v1.py
+test_the_required_points_are_the_four_of_the_spec | §6 phase 0 names four things; a fifth would be the plugin inventing a requirement.
+test_test_paths_is_a_detail_of_the_full_suite_point | `Test paths:` is required, but it belongs to point 2 rather than beside it.
+test_every_required_field_maps_to_one_of_the_four_points | No field may exist outside the four points, or the contract has grown a fifth.
+test_raw_dumps_is_optional | §5.3 says the path comes from the contract, but §6 never makes it one of the four.
+test_the_template_block_filled_in_passes_the_validator | Principle 3: a contract built from the template must be a contract the gate accepts.
+test_the_unfilled_template_is_rejected_with_the_field_named | Placeholders are not values; telling the agent which field is empty is the point.
+test_every_field_the_validator_requires_is_taught_by_the_template | A required field the template never shows is a field nobody can fill in.
+test_a_contract_without_test_paths_names_the_point_it_belongs_to | The refusal has to say *why* the field exists, or it reads as an arbitrary demand.
+test_raw_dumps_absence_is_a_warning_not_a_failure | §5.3 allows the logs to live in the task file; a warning is the honest signal.
+test_doctor_accepts_a_template_shaped_contract | Exit 0, and the output says the contract is usable.
+test_doctor_refuses_a_contract_missing_one_of_the_four_points | Exit 2 with the field named — the operator has to know what to add.
+test_doctor_warns_about_raw_dumps_but_exits_zero | An optional field that is absent is a warning; turning it into a failure invents a rule.
+test_doctor_without_any_contract_fails_closed | No contract means phase 0 cannot start; reporting success would be a lie.
+test_a_template_shaped_contract_leaves_the_gate_active | The measured defect: a template contract used to turn the gate off silently.
+test_doctor_reports_where_the_gate_would_look | `doctor` and the gate must answer the same question the same way.
+## test_bugfixer_cursor_payloads_v3.py
+test_the_fixture_records_the_shapes_that_were_actually_delivered | A fixture from imagination is the defect Б-4 describes, so it says where it came from.
+test_a_cursor_payload_yields_the_project_directory | `cwd` is empty for Shell and absent for Grep, so the gate must read the roots.
+test_an_mcp_tool_is_not_a_write | Phase 3 searches through MCP. `MCP:<server>` was unknown, so search was denied.
+test_the_mcp_call_is_allowed_during_a_run | The end-to-end claim: a real search call in phase 1 gets `allow`.
+test_a_hyphenated_mcp_server_is_covered_by_the_prefix | Server names are user-chosen, so the rule matches a prefix and never a fixed list.
+test_silencing_a_command_is_not_a_write | A redirection into a device writes no file; refusing it blocks the baseline.
+test_the_suite_command_is_allowed_in_phase_one | The end-to-end claim for the baseline step: the usual invocation is not refused.
+test_a_real_write_is_still_a_write | The negative control: the exclusion is for devices, not for redirections in general.
+test_a_production_write_is_still_refused_in_phase_one | Allowing the suite must not become allowing everything (invariant 13).
+test_tools_that_never_reach_the_hook_are_recorded_not_invented | `CallDynamicTool` and `GetDynamicTools` were called and never delivered to `preToolUse`.
+## test_bugfixer_deploy_v3.py
+test_plugin_manifest_matches_the_documented_schema | A Cursor plugin needs ``.cursor-plugin/plugin.json`` with a kebab-case name.
+test_plugin_hook_uses_a_relative_path | A plugin hook cannot embed an interpreter path that differs per machine.
+test_wrapper_is_executable_in_the_source_tree | The exec bit has to survive the copy, so it has to be set at the source.
+test_installer_writes_a_project_hook_per_harness | Each harness gets its own config file, all pointing at one wrapper.
+test_cursor_and_claude_templates_use_their_documented_project_variable | A baked-in path breaks the moment the skill is installed elsewhere.
+test_installer_preserves_foreign_hooks | Replacing a project's hooks file would delete work this installer cannot see.
+test_installer_is_idempotent_for_the_hook | Running the installer twice must not stack duplicate hook entries.
+test_installed_wrapper_keeps_its_exec_bit | A hook that cannot execute is a fail-closed block on every tool call.
+test_no_absolute_paths_are_written_by_the_installer | Nothing machine-specific may be baked into the installed tree.
+test_installed_hook_denies_a_production_write | The end-to-end claim: install, run as the harness runs it, get a deny.
+test_installed_hook_allows_a_test_write | The negative control: a gate that denies everything is not a gate.
+test_gate_discovers_the_ledger_from_the_contract | No ``__LEDGER__`` placeholder: the contract names the pattern instead.
+test_gate_refuses_loudly_when_the_contract_is_absent | No contract means no run this gate can prove — and saying so is the point.
+test_gate_refuses_an_ambiguous_match_with_both_names | Two equally new ledgers would attach the run to an arbitrary bug, so the gate stops.
+test_gate_prefers_the_newest_ledger | The bug being worked on is the most recently touched task file.
+test_verifier_reports_a_binary_outside_path | ``shutil.which`` alone called ``cursor-agent`` missing while it was installed.
+test_verifier_never_reports_an_unobserved_pass | A missing harness must not read as verified.
+## test_bugfixer_emergency_switch_v3.py
+test_the_switch_turns_off_the_phase_rule_for_this_ledger | Measured: `lib/core.py` is refused without the line and allowed with it.
+test_the_switch_does_not_disable_the_gate | A terminal status still stops every write: the switch targets one rule, not the guard.
+test_the_switch_must_be_a_whole_line | Prose that mentions the switch must not satisfy it — the same rule as every marker.
+test_the_switch_is_case_insensitive | An operator typing `phase gate: OFF` in a hurry means the same thing.
+test_the_documentation_explains_the_switch_and_its_two_ways_out | Б-6: a switch nobody documents is a switch nobody can use.
+test_the_switch_is_not_a_default_anywhere | The rule must stay on unless a ledger opts out: an opt-out that ships enabled protects nothing.
+## test_bugfixer_fail_loud.py
+test_a_contract_without_a_ledger_field_is_refused_loudly | The measured defect: a contract that declares a run but names no ledger.
+test_a_contract_whose_pattern_matches_nothing_is_refused_loudly | A pattern with no file is either a fresh project or a typo; both need a word to a human.
+test_two_equally_new_ledgers_are_refused_with_the_candidates_named | Ambiguity was answered with silence; naming both files is what lets a human choose.
+test_a_missing_ledger_can_still_be_created | The refusal must not forbid the write that fixes it.
+test_creating_the_ledger_does_not_open_production_writes | The exception is the ledger, not the phase: a code edit is still refused.
+test_no_contract_at_all_is_refused | Operator decision, 2026-11-27: a run without a contract has no meaning.
+test_absent_and_incomplete_contracts_are_both_refused_with_their_own_advice | Both stop the run; the difference is what the operator has to do about it.
+test_unreadable_input_denies | Already correct, and pinned here so a future refactor cannot soften it into silence.
+test_a_refusal_always_carries_a_recommendation | Spec §0: "упасть с причиной". A reason without a next step is a dead end.
+## test_bugfixer_fsm.py
+test_there_are_exactly_eight_named_edges | Invariant 1: eight names, keyed by name — not seven phase pairs.
+test_both_4_to_3_edges_coexist | The defect this rewrite closes: a phase-pair key cannot hold two reasons.
+test_edge_pair_with_two_meanings_requires_a_name | Refusing to guess beats picking whichever edge was declared first.
+test_edges_subcommand_lists_all_eight | The operator needs the names without reading the source.
+test_unknown_edge_name_for_a_valid_pair_is_refused | A name that does not lead there is refused, and the legal ones are listed.
+test_reproduced_needs_a_red_test | A baseline without a reproduction is not enough.
+test_reproduced_needs_a_baseline | A reproduction without a baseline cannot tell regression from old defect.
+test_reproduced_needs_clarification | A task understood wrongly yields a correct solution to a different task.
+test_three_pairs_of_questions_are_enough | Three covers symptom, expectation and verification.
+test_assumptions_allow_a_headless_run | There is no user in headless mode, so stated assumptions replace answers.
+test_two_pairs_without_a_gap_line_are_refused | Fewer than three answers is allowed only when the gap is named.
+test_two_pairs_with_a_gap_line_are_enough | A named gap is an explicit decision, which is what the gate can require.
+test_first_guess_requires_exactly_one_h0 | Phase 2 makes one obvious guess; two is research, none is no progress.
+test_first_guess_succeeds_with_a_complete_h0 | The legal path must stay open.
+test_two_h0_blocks_are_refused | A second ``### H0`` means the cheap attempt is repeated, not extended.
+test_first_guess_requires_the_working_on_marker | Without it the edit cannot be attributed to a hypothesis (invariant 12).
+test_first_guess_requires_proposed_to_point_at_a_record | A hypothesis not tied to the history cannot be reported later.
+test_first_guess_is_refused_when_an_attempt_exists | An already-spent cheap guess means ``ALREADY_TRIED``, not a fresh one.
+test_already_tried_needs_a_previous_attempt | Research before spending the cheap guess is the waste this closes.
+test_already_tried_succeeds_after_an_attempt | A paid, unconfirmed attempt is exactly what research is for.
+test_already_tried_is_refused_when_the_task_is_already_solved | Researching a closed cause wastes an attempt that cannot help.
+test_hypothesis_ready_needs_a_merge_line | Without the merge note, duplicated hypotheses get probed twice.
+test_hypothesis_ready_needs_an_unchecked_hypothesis | Research that produced nothing new cannot enter the probe phase.
+test_hypothesis_ready_needs_the_active_marker | Phase 4 needs to know which hypothesis the edit belongs to (finding D-1).
+test_hypothesis_ready_refuses_a_marker_on_a_refuted_hypothesis | Probing a dead hypothesis is not progress.
+test_hypothesis_ready_refuses_two_markers | Invariant 12: the marker is rewritten in place, not appended.
+test_hypothesis_ready_succeeds | The legal path must stay open.
+test_proven_succeeds_with_every_proof | The baseline case: CONFIRMED backed by RED, logs, nature, GREEN, scan, table.
+test_proven_names_each_missing_marker | A refusal that does not name the marker is a refusal the agent ignores.
+test_proven_requires_the_results_table | 'It works' without before and after cannot be checked (§11).
+test_proven_requires_a_second_test_or_a_named_corner_case | One test is not a boundary.
+test_one_test_is_enough_when_the_corner_case_is_named | An explicit 'there are no edges, because' is a claim a reader can check.
+test_partially_confirmed_cannot_enter_phase_5 | Invariant 24: a partial hit is deepened, not declared proved.
+test_proven_requires_an_attempt | A fixed test is not a fixed bug: the code change must be recorded.
+test_proven_requires_a_probe_record_not_a_route | Invariant 18: a phase-2 record must not close the transition to Phase 5.
+test_next_in_queue_requires_the_marker_to_move_first | Step 4.9a switches the marker before the edge; 4.0 only confirms it (D-2).
+test_next_in_queue_succeeds_once_the_marker_is_switched | The legal path must stay open.
+test_next_in_queue_refuses_a_partial_verdict | A partial hit is deepened, not abandoned for the next hypothesis.
+test_queue_exhausted_refuses_when_a_hypothesis_is_waiting | Researching a case already formulated repeats paid work.
+test_queue_exhausted_needs_new_information | A return that teaches nothing repeats the same round.
+test_queue_exhausted_succeeds_with_an_empty_queue_and_new_information | The legal path must stay open.
+test_refutation_without_logs_is_refused_on_both_edges | A silent test does not prove the mechanism is absent.
+test_refutation_without_a_revert_is_refused | A rolled-back probe with no line makes the next session repeat it.
+test_deepen_same_succeeds_with_a_delta | Numeric progress plus the same hypothesis is the legal path.
+test_deepen_same_needs_three_numbers | Two numbers do not say what the target was.
+test_deepen_same_refuses_a_revert_when_a_delta_exists | Rolling back a probe that moved the numbers throws away what it taught.
+test_deepen_same_case_c_requires_a_revert | A regression without progress has bought nothing, so it is rolled back.
+test_deepen_same_requires_a_resolution_on_a_metrics_conflict | The agent names the priority; the gate checks that the choice was named.
+test_deepen_same_keeps_the_same_hypothesis_active | Deepening a different hypothesis silently switches what is being probed.
+test_deepen_same_ignores_the_queue | A partial hit is deepened even when another hypothesis is waiting (D-3).
+test_cap_reached_refuses_both_4_to_3_edges | At ``A = 10`` the only exit is ``LIMIT_REACHED``, not another round.
+test_limit_reached_is_a_valid_status | The status must exist, or the cap has no terminal to write.
+test_unknown_status_is_refused | Invariant 15: an unreadable status is denied, not read as RUNNING.
+test_phase_nine_is_not_a_phase | A five-phase automaton with an open-ended phase number is not an automaton.
+test_skipping_from_phase_1_is_refused | Skipping a phase is the defect the automaton exists to prevent.
+test_there_is_no_edge_back_to_phase_1 | Q-1: a wrong baseline is BLOCKED, not a fresh attempt.
+test_there_is_no_edge_from_phase_5_to_research | A regression after CONFIRMED is a contradiction in the proofs, not research.
+test_transition_needs_evidence | History without a reason is empty prose.
+test_history_records_the_edge_name | The name is what a later reader needs: the phase pair is ambiguous.
+test_idempotent_advance_writes_no_history | Re-setting the current phase is a no-op, not a transition.
+test_markers_in_prose_do_not_satisfy_a_guard | A ledger that documents the marker must not pass the precondition.
+test_clarification_in_prose_does_not_count | Otherwise a ledger describing the questions would pass its own gate.
+test_phase_gate_off_allows_tooling_ledgers | A tooling task cannot be locked out of its own source files.
+test_phase_gate_off_does_not_unlock_a_terminal_status | The opt-out covers Phase 1 only; BLOCKED and DONE still stop everything.
+test_phase_gate_off_in_prose_is_not_an_opt_out | Describing the marker must not disable the ban.
+## test_bugfixer_gate.py
+test_phase1_allows_test_writes | Phase 1 exists to write tests; blocking that would make the skill unusable.
+test_phase1_denies_production_writes | The core prohibition: no production change before the cause is confirmed.
+test_phase1_allows_reads | Reading production code is how the cause is found.
+test_phase1_allows_running_tests | The baseline run must not be blocked by the gate.
+test_phase1_denies_shell_writes | `sed -i` is a production write wearing a shell command's clothes.
+test_phase1_allows_creating_a_directory_under_the_test_paths | A new test directory is test-tree work; the phase ban is about production code.
+test_attempt_cap_denies_writes | The cap is ``A`` = 10 probes that reached a code change, not iteration headings.
+test_below_the_attempt_cap_allows_phase4_writes | Nine probes with an active hypothesis still permit the tenth.
+test_phase4_allows_production_writes_with_an_active_hypothesis | Phase 4 is the only phase where an edit is legal, and it must stay legal.
+test_phase3_denies_production_writes | Research collects evidence; an edit there is a probe without a hypothesis.
+test_phase4_denies_a_write_without_an_active_hypothesis | Invariant 12: an unattributable edit cannot be a probe.
+test_phase4_denies_a_write_naming_a_missing_hypothesis | A marker pointing nowhere attributes the edit to nothing.
+test_phase4_denies_a_table_form_attempt | Invariant 17b: a marker in a table cell is invisible to the gate.
+test_blocked_status_denies_even_test_writes | A blocked run must ask the user, not keep editing.
+test_done_status_denies_writes | A finished run must not be reopened by accident.
+test_status_mentioned_in_prose_is_not_a_status | A rules table saying "STATUS: BLOCKED" must not block the task forever.
+test_partial_is_terminal_for_the_automaton | 3.0: PARTIAL is a record of experience, not a paused run.
+test_limit_reached_denies_writes | ``A = 10`` has no terminal but this one, so it must actually stop work.
+test_unknown_status_is_denied_not_read_as_running | Invariant 15: a status the gate cannot read is not "probably RUNNING".
+test_partial_does_not_override_a_terminal_status | A ledger holding both markers is BLOCKED; the stricter state wins.
+test_verify_matrix_never_reports_an_unobserved_pass | The verification script must distinguish absent from verified.
+test_verify_script_runs_and_self_tests | The gate self-test inside the verify script must actually pass.
+test_verify_script_finds_the_gate_without_a_parent_layout | The script must locate the gate from its own tree, not from ``skills/<id>``.
+test_the_gate_reads_only_the_project_contract | One place for the contract: ``bug-fixer.project.md``, as §6 Step 0 says.
+test_no_ledger_refuses_and_says_how_to_start | A wired gate with no contract refuses: it has nothing to enforce.
+test_the_task_file_may_be_written_in_every_phase | Invariant 31: phase 1 records findings just as phase 4 does.
+test_the_task_file_is_recognised_whatever_the_tool | Both edit tools address the ledger by path; the phase ban is about code, not records.
+test_the_task_file_is_recognised_below_the_project_root | A ledger under ``tasks/`` arrives as a relative path; both forms name one file.
+test_appending_to_the_task_file_from_a_shell_is_allowed | Appending a record is the same write; refusing the redirection would be the same ban.
+test_a_shell_write_that_also_touches_code_is_still_denied | Invariant 31 opens the ledger, not the code: a command naming both is a code write.
+test_a_shell_read_of_the_journal_is_allowed | Invariant 33 forbids writing the journal, not reading it — the agent must be able to.
+test_a_same_named_file_elsewhere_is_not_the_ledger | The ledger exemption is by resolved path, not by file name.
+test_production_writes_stay_denied_outside_phase_4 | Allowing the ledger must not become allowing everything (invariant 13).
+test_corrupt_sidecar_denies | An unreadable phase is not "probably phase 2".
+test_missing_test_paths_denies | Without a contract the gate cannot prove a write is a test edit.
+test_attempts_counted_from_ledger_not_sidecar | The ledger is the source of truth for ``A``; the sidecar holds only the phase.
+test_unknown_tool_is_denied_not_allowed | A renamed tool must not read as "not a write".
+test_known_read_only_tools_stay_allowed | Failing closed must not mean denying reads: the skill is unusable then.
+test_shell_tool_without_a_readable_command_is_denied | A shell call whose command cannot be read cannot be proven test-only.
+test_shell_command_under_an_alternate_key_is_read | The new key is recognised rather than denied, so the fix is not just "deny more".
+test_invalid_stdin_json_denies_instead_of_allowing | Non-JSON on stdin used to become ``{}``, i.e. "no run active", i.e. allow all.
+test_missing_explicit_ledger_denies | ``--ledger`` pointing at nothing is a broken install, not "no run active".
+test_no_ledger_in_payload_is_refused_for_the_contract | With no ledger the refusal is about the missing contract, not about the tool name.
+test_attempt_marker_ignores_prose_and_tables | A prose mention or a table cell is not an ``Attempt`` line (§4, invariant 17b).
+test_cli_exit_codes_and_json | Allow is exit 0 with permission allow; deny is exit 2 with a message.
+test_cli_empty_stdin_does_not_crash | A harness glitch must not turn into a stack trace.
+test_state_cli_roundtrip | The skill advances the phase through this CLI; the gate must see it.
+test_state_cli_rejects_bad_values | Only the five phases and the five statuses are accepted.
+test_cursor_template_is_fail_closed | Cursor fails open by default; the template must opt in.
+test_claude_template_blocks_on_failure | Exit 1 blocks nothing in Claude Code; onFailure is what makes it safe.
+test_codex_template_uses_pretooluse | Codex reads PreToolUse from hooks.json.
+test_ts_adapters_use_the_right_api | OpenClaw needs api.on, not registerHook; OpenCode blocks by throwing.
+test_ts_adapters_do_not_depend_on_bun | F1: OpenClaw is a Node program, so a Bun global is not guaranteed.
+test_ts_adapters_deny_on_spawn_failure | A gate that cannot start must block, not allow.
+test_shell_hook_templates_quote_every_placeholder | F2: an unquoted path breaks on the first path with a space.
+test_cursor_template_does_not_narrow_the_matcher | F3: a partial tool list is a silent bypass, which is worse than a spawn.
+test_adapters_document_the_subagent_gap | The bypass must be visible where someone reads the adapter.
+## test_bugfixer_harness.py
+test_agent_claiming_success_with_a_red_suite_is_blocked | The whole point: an agent saying "fixed" while the suite fails ends BLOCKED.
+test_green_suite_ends_done_when_a_results_table_exists | A green suite plus a results table is the one signal that may end a run DONE.
+test_green_suite_without_a_results_table_is_not_done | A green suite with no before/after numbers is the fix nobody can check.
+test_attempt_cap_writes_limit_reached | ``A = 10`` is a terminal status, not a reason to keep passing.
+test_cap_stops_the_loop | A loop with a moving failure set still stops at the cap.
+test_repeated_failures_without_progress_stop_early | Two identical failing sets and no ledger change is a stuck loop.
+test_every_pass_is_recorded | A run that ends badly must still be diagnosable.
+test_dry_run_executes_nothing | A dry run must not spawn the agent or touch the ledger.
+test_resume_skips_recorded_passes | Resume must not repeat work already on disk.
+test_sudo_in_the_test_command_is_refused | The agent runs unprivileged; the harness must not hand it sudo.
+test_sudo_in_the_agent_command_is_refused | Same rule for the agent invocations.
+test_missing_test_command_fails_closed | Guessing the suite command is the defect the gate exists to prevent.
+test_missing_ledger_fails_closed | A run needs somewhere to write findings.
+test_cursor_adapter_requires_a_key | A key on the command line would land in shell history, so it comes from env only.
+test_agent_cmd_without_placeholder_is_refused | A template that drops the prompt would run the agent on nothing.
+test_phase_prompt_matches_the_observed_phase | A stale prompt must not push the agent into a later phase.
+test_headless_prompt_demands_explicit_assumptions | There is no user in a headless run, so ``REPRODUCED`` needs ``Assumption:`` lines.
+test_probe_prompt_names_the_markers_phase_four_must_write | Phase 4 is where the gate is strictest; the prompt has to name what it reads.
+test_every_phase_has_a_prompt | A phase without a prompt means the runner drives the agent blind.
+## test_bugfixer_init_and_required_contract.py
+test_init_writes_a_contract_the_schema_recognises | The file must be at the path the skill looks for, and must parse.
+test_init_fills_in_what_it_can_prove | A test directory and a task directory are facts on disk, not guesses.
+test_init_leaves_unprovable_values_as_visible_placeholders | An empty project has nothing to infer from, so a gap that matters stays visible.
+test_init_fills_search_with_the_tools_cursor_actually_provides | Search comes from the MCP settings, not from a list baked into the plugin.
+test_init_never_copies_mcp_secrets_into_the_contract | An MCP config holds API keys; the contract is a file people commit.
+test_init_keeps_the_builtin_search_when_mcp_lists_one | The editor's own search is a tool the agent has even with no MCP server configured.
+test_init_says_so_when_no_search_server_is_configured | No MCP config means no server names to name; the field must not invent any.
+test_init_reports_which_fields_the_agent_must_confirm | `init` fills what a filesystem can prove; the agent confirms the rest against its runtime.
+test_init_finds_the_test_directory_whatever_it_is_called | `tests/` is a convention, not a fact: plenty of projects use another name.
+test_a_directory_with_no_tests_is_not_a_test_path | Measured defect: `docs/superpowers/specs/` was accepted for its name alone.
+test_init_finds_the_ledger_directory_whatever_it_is_called | The ledger location is a layout decision, not `tasks/` or nothing.
+test_init_detects_a_test_command_in_a_subdirectory | A monorepo keeps its manifest below the root; a root-only check finds nothing.
+test_init_ignores_manifests_inside_vendor_directories | `node_modules` is full of `package.json` files; none of them describe this project.
+test_init_writes_the_journal_rule_into_gitignore | Invariant 35 has to hold in the project the plugin is installed into, not only here.
+test_init_appends_to_an_existing_gitignore_without_losing_it | A project's ignore rules are its own; adding one must not replace the rest.
+test_init_is_idempotent_about_gitignore | Running init twice must not stack duplicate rules.
+test_init_warns_when_the_ledger_pattern_matches_nothing | A pattern with no file means the gate cannot start; saying so beats a silent placeholder.
+test_generated_contract_states_it_is_unverified | `init` derives values from files; it cannot know they work.
+test_doctor_warns_that_an_unverified_contract_has_not_been_checked | Exit 0 because the file is well-formed, a warning because nothing was confirmed.
+test_gate_refuses_work_until_the_contract_is_verified | The operator's rule: configure once, then work.
+test_verifying_the_contract_opens_the_gate | The legal path must be one edit away, or the refusal is a lockout.
+test_writing_the_marker_itself_is_never_refused | Confirming the contract is setup: the gate must not block the edit that unblocks it.
+test_a_missing_marker_counts_as_unverified | A hand-written contract predates the marker; treating it as verified would be a guess.
+test_doctor_warns_when_the_contract_is_older_than_the_schema | A contract written for an older schema can pass the field checks and still be wrong.
+test_doctor_warns_when_the_contract_is_newer_than_the_schema | A newer contract may rely on fields this plugin does not know; that is worth saying.
+test_no_suite_is_a_problem_not_a_warning | §6 point 2 makes the full-suite command mandatory; §1 needs a baseline to exist.
+test_no_suite_refusal_offers_three_concrete_ways_forward | The operator's requirement: the user sees the problem and three ways to fix it at once.
+test_gate_refuses_work_in_a_project_with_no_suite | A verified contract with `Full suite: none` still cannot support a run.
+test_a_refused_run_records_the_problem_for_the_user | The refusal is for the user, not only the agent: it has to be readable on its own.
+test_init_documents_how_to_migrate_an_old_contract | A version warning is only useful if it says what to do.
+test_the_doctor_version_warning_points_at_the_documented_procedure | The warning has to lead to the instructions, not to a guess.
+test_init_fills_prohibitions_with_the_safe_baseline | Prohibitions default to the rules that are true of every project, not to none.
+test_init_detects_the_test_command_from_the_project | The command is read from a manifest, not guessed: a manifest *is* the fact.
+test_a_detected_contract_is_usable_after_one_confirmation | Out of the box means: generated, confirmed once, then working.
+test_init_refuses_to_overwrite_an_existing_contract | A filled contract holds decisions; replacing it silently would destroy them.
+test_init_can_force_after_an_explicit_request | Overwriting is allowed when asked for by name, never by accident.
+test_a_freshly_initialised_contract_is_not_yet_usable | `doctor` must say what is missing, rather than bless a contract nobody finished.
+test_the_gate_refuses_a_project_with_no_contract | The operator's rule: no contract means no run, and the refusal says how to start one.
+test_the_gate_refuses_a_contract_with_placeholders | A contract nobody finished is not a contract: the agent would be reading `<…>`.
+test_a_completed_contract_lets_the_gate_work_normally | The legal path stays open: a real contract gives a real verdict, not a blanket refusal.
+test_creating_the_contract_itself_is_never_refused | `bugfixer init` must be able to write the file the gate is asking for.
+test_installing_the_plugin_is_still_possible_without_a_contract | Setup writes must not be blocked before a contract exists, or setup can never happen.
+test_a_project_install_writes_a_starting_contract | The operator's requirement: the plugin works out of the box.
+test_a_project_install_does_not_overwrite_a_hand_written_contract | Re-installing must not destroy the decisions a project already made.
+## test_bugfixer_journal_v3.py
+test_the_journal_sits_beside_the_task_file | §5.4: one journal per task, named after the task file.
+test_an_event_is_one_json_line_with_the_required_fields | §5.4's field table: ``at``, ``event`` and ``why`` on every record; one per line.
+test_a_record_cannot_carry_a_newline_in_its_reason | One line is one event; a reason with a break would split it into two.
+test_an_advance_grows_the_journal_by_exactly_one_line | Invariant 32: the previous records are untouched, one new line is added.
+test_a_refused_transition_still_records_nothing_new_about_the_phase | A refusal is history, or it never happened; it must not advance the run either.
+test_the_phase_comes_from_the_last_advance | Invariant 34: no second file — the newest ``advance`` says where the run is.
+test_a_status_event_is_visible_in_the_state | ``status`` is one of the six event kinds; the reader must not lose it.
+test_a_corrupt_journal_line_fails_closed | An unreadable record is not "probably phase 1": the gate must say so loudly.
+test_an_agent_write_to_the_journal_is_denied | Invariant 33: a journal the agent can edit is a phase the agent can choose.
+test_an_agent_delete_of_the_journal_is_denied | Erasing the file erases the history the refusal is meant to protect.
+test_the_refusal_names_the_owner | The agent has to learn who writes it, or it will try again with another spelling.
+test_a_refused_write_is_recorded_with_the_tool_and_the_reason | §5.4 lists ``deny`` among the events; a refusal nobody wrote down never happened.
+test_a_denial_record_does_not_move_the_phase | Recording a refusal is an observation; the state must still read phase 1.
+test_an_allowed_write_records_no_denial | Only refusals are denials; a clean allow must not fill the journal.
+test_without_a_journal_the_run_is_in_phase_1 | Invariant 36: the journal observes the run; it does not gate it.
+test_without_a_journal_the_task_file_is_still_writable | Invariant 36 with 31: no journal must not close the ledger.
+test_the_old_sidecar_no_longer_moves_the_phase | The reproduced forgery: writing ``{"phase": 4}`` used to open the Phase-1 ban.
+test_the_gate_reads_the_phase_the_cli_recorded | The legal path stays open: a proved edge moves the run and the gate follows.
+test_the_journal_is_ignored_in_the_plugin_tree | Invariant 35: history of a run is local, so the extension must be ignored.
+## test_bugfixer_ledger_v3.py
+test_canonical_ledger_parses_with_every_reader | Invariant 17a: the documented example is readable by every parser.
+test_canonical_ledger_derives_the_documented_statuses | Derived status must match the story the example tells.
+test_canonical_ledger_has_exactly_one_active_marker | Invariant 12: one pointer, rewritten in place — not a switch log.
+test_canonical_records_carry_kind_and_scope | ``Kind`` distinguishes the phase that wrote a record (invariant 18).
+test_canonical_has_a_probe_record_for_the_proven_hypothesis | ``PROVEN`` needs ``Kind: probe``: a route or research record must not close it.
+test_attempts_are_counted | Each ``Attempt <k> consumed`` is one probe that reached a code change.
+test_attempt_inside_prose_is_not_a_probe | A sentence about the marker is not the marker.
+test_attempt_in_a_table_row_is_not_a_probe | The table form is rejected, not silently accepted (invariant 17b).
+test_table_form_recheck_is_reported | Same rule for ``Recheck``.
+test_counters_restart_after_an_operator_reset | A reset makes the numbering start again, so only later attempts count.
+test_agent_written_reset_is_refused | Only the operator may reset ``A``; otherwise the cap is decorative.
+test_reset_without_a_reason_is_refused | The strict form carries a reason, so a future reader knows why.
+test_rechecks_are_counted_per_hypothesis | ``R<h>`` is per hypothesis: five re-runs of H1 say nothing about H2.
+test_hypotheses_without_any_block_is_empty_not_an_error | A fresh ledger has no hypotheses yet.
+test_rank_and_metadata_are_parsed | ``Rank``, ``Proposed``, ``Origin`` feed the queue order and the report.
+test_status_is_derived_from_records_not_from_the_field | Invariant 10: an edited ``Status`` field cannot change the truth.
+test_partial_verdict_keeps_the_hypothesis_in_the_queue | Invariant 27c: a partial hit is deepened, so the hypothesis stays unchecked.
+test_unchecked_hypotheses_come_in_rank_order | Step 4.0 takes the next hypothesis by ``Rank``, not by file order.
+test_hypothesis_count_includes_duplicates | A second ``### H0`` is a defect, so counting must not deduplicate it away.
+test_records_parse_required_fields | ``Scope``, ``Responds to``, ``Outcome`` are what the report is built from.
+test_record_body_keeps_the_markers | Markers live in the body, so the body has to survive parsing.
+test_no_marker_is_empty_string | Phase 1 and 2 have no active hypothesis, and that is not an error.
+test_two_markers_are_ambiguous | Invariant 12: the marker is rewritten, so two lines mean a broken rewrite.
+test_marker_with_trailing_noise_does_not_match | ``Working on: H2 (old)`` is not a pointer: failing loudly beats guessing.
+test_marker_inside_prose_is_not_a_marker | The gate reads the marker, not a sentence about it.
+## test_bugfixer_legacy_v3.py
+test_iteration_heading_without_hypotheses_is_legacy | The 2.1 signature: a pass heading and no hypotheses anywhere.
+test_three_zero_ledger_is_not_legacy | One ``### H1`` is enough to make it a 3.0 run, whatever else it holds.
+test_iteration_field_in_a_block_is_not_a_heading | 3.0 keeps the pass in a field; only the heading is the old signature.
+test_empty_ledger_is_not_legacy | A fresh file is the start of new work, not a stale one.
+test_fresh_three_zero_ledger_is_not_legacy | Phase 1 of a legitimate 3.0 run writes ``## Iteration 1`` before any hypothesis.
+test_three_zero_record_without_hypotheses_is_not_legacy | A ``Kind`` field is the 3.0 signature: 2.1 had no such field.
+test_prose_mention_of_iteration_is_not_a_heading | Describing the heading must not make a 3.0 ledger look legacy.
+test_legacy_ledger_denies_a_write_with_an_actionable_reason | The refusal must name both ways out: finish under 2.1, or start a new ledger.
+test_legacy_ledger_is_refused_for_reads_too | A stale file is a stale file; failing loudly is how the operator notices.
+test_migrated_ledger_is_accepted | A ledger that has hypotheses is work in progress, not stale.
+test_cli_reports_the_legacy_refusal | The adapter path, not just the pure function.
+## test_bugfixer_limits_v3.py
+test_rewriting_an_old_record_is_allowed | Debugging is research: fixing your own early note must not be blocked.
+test_no_integrity_module_exists | Invariant: the hash module is not created, so nothing can quietly depend on it.
+test_task_fingerprint_is_recorded_on_first_sight | The baseline is the task text the run started with, kept as a journal record.
+test_task_drift_warns_but_does_not_refuse | Fixing a different bug is worth a warning; the operator decides.
+test_clarifications_do_not_count_as_task_drift | Refinements belong in ``## Clarifications``, and adding them is legal.
+test_attempt_gap_is_named | A deleted attempt line must be visible, not silently forgiven.
+test_attempts_without_a_gap_pass | The legal numbering must pass, or the rule is unusable.
+test_twelve_attempts_exceed_the_cap | The cap is on ``A``, and eleven attempts is already over it.
+test_recheck_gap_is_named_with_its_hypothesis | ``R<h>`` is per hypothesis; a gap there is a different bug from a gap in ``A``.
+test_sixth_recheck_is_refused | Five repairs is the limit; a sixth attempt is not evidence.
+test_recheck_without_a_probe_is_refused | There is no verdict to repeat when the hypothesis was never probed.
+test_rechecks_do_not_consume_attempts | Invariant 6: ten hypotheses times five repairs is still ``A`` = 10.
+test_eleven_hypotheses_are_refused | Thirty hypotheses with none probed is not research.
+test_ten_hypotheses_are_allowed | The limit must not forbid the number it names.
+test_unauthorized_reset_is_reported_as_a_problem | A reset the operator did not write makes the cap decorative.
+test_operator_reset_restarts_the_numbering | After a reset the numbering starts at 1 again, and that is not a gap.
+test_each_refusal_pattern_fires | Every refusal pattern needs its own proof: one test for the group proves one regex.
+test_a_fact_of_setup_is_allowed | `password_present=true` reports setup, which §10 requires an agent to be able to say.
+test_harmless_flag_is_not_even_a_warning | A false positive here gets the gate removed, taking the real checks with it.
+test_the_refusal_does_not_repeat_the_secret | A message that quotes the value is a second copy of it, in an issue tracker.
+test_an_env_var_reference_is_not_a_secret | ``password: ${DB_PASSWORD}`` is configuration, not a leak.
+test_a_null_value_is_not_a_secret | ``token: null`` says there is no token.
+test_record_with_a_secret_is_denied | Records hold log output, so they are where a leaked value lands.
+test_clean_record_is_allowed | The scanner must not block ordinary log lines that report setup.
+test_a_record_reporting_a_key_length_is_denied | The same record with a length instead of the fact: a length helps to recover the value.
+test_cli_reports_a_secret_in_a_file | The agent needs the same check without importing the module.
+test_cli_returns_zero_on_a_clean_file | Exit 0 is what the agent's own pre-commit pass keys on.
+## test_bugfixer_project_boundary_v3.py
+test_a_write_into_a_system_directory_is_refused | No phase opens these: the reason names the boundary, not phase 1.
+test_the_boundary_is_not_a_phase_rule | Told "phase 1 forbids this", an agent would wait for phase 4 and try again.
+test_the_refusal_says_where_temporary_files_go | A refusal that only says "no" leaves the agent with nothing to do instead.
+test_a_write_inside_the_project_is_judged_by_the_phase_rule | The negative control: the boundary must not swallow the ordinary case.
+test_a_test_write_inside_the_project_is_still_allowed | Phase 1 exists to write failing tests; the boundary must not block them.
+test_an_absolute_path_inside_the_project_is_inside | An agent may address its own project absolutely; that is not "outside".
+test_a_shell_redirection_outside_the_project_is_refused | The ban is about the destination, whatever tool carries it.
+test_the_archivers_and_copy_tools_are_classified_correctly | A tree moved by `rsync` is a tree changed; a listing is not.
+test_rsync_out_of_the_project_is_refused_end_to_end | The bypass as it was found: the whole tree, past the phase ban, no refusal.
+test_rsync_inside_the_project_is_still_a_phase_matter | Copying inside the project is a normal edit, judged by the phase like any other.
+test_the_out_of_project_refusal_asks_the_user | Cursor does not enforce `ask` (docs, 2026-11), so the only honest form is a deny that
+## test_bugfixer_secret_wordings_v3.py
+test_the_template_exists | A file the skill cannot point at is a file nobody copies.
+test_the_skill_points_at_the_template | `SKILL.md` is what the agent reads; a template it never mentions is dead weight.
+test_every_file_the_skill_points_at_still_exists | The reference must resolve in an installed tree, not only in this checkout.
+test_the_template_teaches_something | A guard over an empty list passes vacuously; this proves there is material.
+test_no_taught_phrase_is_refused | The test that matters: the scanner runs over the template, not over a sample of it.
+test_the_forbidden_forms_are_named_beside_the_allowed_ones | An agent adapting a phrase has to see where the line is, not infer it from a refusal.
+test_the_forbidden_examples_are_marked_as_such | And the guard is not symmetric by accident: the forbidden ones really are refused.
+test_the_record_markers_stay_copyable | `Secrets scan: clean` is what step 4.9 records; the wordings must not bury it.
+## test_bugfixer_secrets_derived_v3.py
+test_a_derived_characteristic_is_refused | Length, hash, size and prefix all narrow the search space, so all are leaks.
+test_the_derived_rule_names_itself | A refusal has to say which rule fired, or the agent cannot tell what to remove.
+test_a_value_is_still_refused | The original rule keeps working: a literal key is a leak.
+test_the_fact_of_setup_is_allowed | The operator has to be told whether a key is configured; that is the point of the rule.
+test_a_harmless_flag_is_still_silent | `cache_present=true` is not about a secret at all and must not even be reported.
+test_an_env_var_reference_is_not_a_secret | `password: ${DB_PASSWORD}` is configuration, not a leak.
+test_a_null_value_is_still_allowed | `token: null` says there is no token.
+test_the_scanner_has_no_advisory_level | The only thing it warned about was the fact of setup, which is now allowed outright.
+test_the_finding_type_no_longer_carries_an_advisory_flag | A field that nothing can set is a field a caller will misread.
+test_the_cli_is_clean_on_a_setup_fact | Step 4.6a runs this command; it must not fail on the report the skill asks for.
+test_the_cli_refuses_a_length | And the other half: the number that used to be recommended is now a refusal.
+## test_bugfixer_session_start_v3.py
+test_a_ready_project_produces_no_message | Invariant 41: the hook stays silent when there is nothing to say.
+test_no_contract_is_named_as_the_reason | §18.4 names "no contract" as one of the three things worth saying.
+test_an_unverified_contract_is_a_different_reason_from_a_missing_one | Two causes, two messages: a shared "something is wrong" sends the agent to the wrong fix.
+test_a_project_without_a_suite_is_named | §6 point 2 makes the suite mandatory; silence about it would hide a blocked run.
+test_a_contract_with_no_ledger_file_is_named | The gate refuses here too, so the status says so rather than reporting a ready project.
+test_doctor_and_the_hook_share_one_implementation | Two answers to "is this ready" is how the agent is told yes and then refused.
+test_cursor_answers_with_additional_context | Cursor's `sessionStart` field. Any second key would be a second, unknown instruction.
+test_claude_nests_the_context_and_names_the_event | Claude Code reads both spellings without de-duplicating, so there must be one.
+test_codex_takes_the_flat_field | Codex reads `additionalContext` at the top level; nesting it would silently do nothing.
+test_openclaw_blocks_with_a_non_empty_reason | A block with no reason is the broken guard §0 names.
+test_openclaw_refuses_to_block_without_a_reason | The caller must stay silent instead; an empty blockReason is worse than no block.
+test_opencode_refuses_rather_than_pretending | It has no context channel, so `{}` would read as "ready" — the one wrong answer.
+test_every_harness_has_an_adapter_file | Invariant 40: a file per harness, so a harness-specific defect has one place to live.
+test_a_two_key_response_is_refused_by_the_guard | The guard exists because the failure it prevents is invisible: double-injected context.
+test_the_entry_stays_silent_for_a_ready_project | A hook that always speaks costs context in every session and gets ignored.
+test_the_entry_emits_cursor_shape_in_a_project_without_a_contract | The end-to-end claim for the harness we can run: shell entry, adapter, JSON, one key.
+test_each_harness_gets_its_own_shape_from_the_entry | One run per harness, because the format is the harness's, not ours.
+test_opencode_says_nothing_and_explains_why | No channel means no payload; the reason goes to stderr, where a person reads it.
+test_an_unknown_harness_is_a_wiring_error | A guessed default would be a silent mis-spelling of somebody else's format.
+test_the_entry_names_no_interpreter_path | A hook cannot embed an interpreter path that differs per machine.
+test_the_entry_contains_no_inline_python | §5.4: bash orchestrates, Python implements. An inline block is the pattern it forbids.
+test_created_files_carry_no_world_access | §5.9: the plugin must not grant other users access to what it writes.
+test_a_projects_own_file_mode_is_left_alone | Merging into `AGENTS.md` must not silently re-permission a file the project owns.
+test_the_generated_contract_carries_no_world_access | Same policy for the contract `init` writes, and for a `.gitignore` the plugin creates.
+test_the_mode_constants_are_declared_in_one_place | `perms` owns the policy; `contract.py` repeats the literal because it must stay standalone.
+test_an_existing_gitignore_keeps_its_mode | The project's own file: the plugin appends a rule, it does not re-permission the file.
+test_cursor_rule_file_is_written_with_always_apply | Without `alwaysApply` the rule is a file nobody reads that looks installed.
+test_agents_block_is_appended_to_an_existing_file | `AGENTS.md` belongs to the project; its own text must survive untouched.
+test_reinstalling_the_rule_does_not_duplicate_it | Two copies drift, and the copy the agent trusts is the stale one.
+test_an_updated_rule_replaces_only_its_own_block | The plugin's text changes between versions; the project's text never does.
+test_removal_takes_the_block_and_leaves_the_project_file | Uninstall must not delete a file the project wrote before the plugin arrived.
+test_removal_deletes_a_file_that_held_only_the_block | An empty `AGENTS.md` the project never had would look like a project decision.
+test_claude_import_is_added_once | Claude Code reads `CLAUDE.md`; `@AGENTS.md` is the import, so the text has one home.
+test_the_rule_names_no_project_specific_value | A rule that repeated the test command would be a second copy, and the stale one.
+test_install_writes_the_cursor_rule | The main initialisation channel has to arrive with the install, not by hand.
+test_install_writes_agents_md_for_codex | Codex reads `AGENTS.md` from the repository root; there is no other channel for it.
+test_install_gives_claude_the_import_not_a_second_copy | Two copies of the instruction would disagree the first time one is edited.
+test_uninstall_removes_the_rule | A rule left behind tells the agent to run a command whose plugin is gone.
+test_the_rule_mapping_exists_in_one_place | `install.py` and `init` must place the same files for the same harness.
+test_every_install_and_removal_names_the_restart | DoD-8: a change to skills, rules or hooks is invisible until the harness re-reads them.
+test_the_restart_notice_covers_every_installed_harness | A harness with no advice would be the one where "it does not work" happens.
+test_the_restart_notice_is_not_printed_for_an_unknown_target | Silence beats invented advice: `openclaw` needs no window, and guessing would be wrong.
+test_uninstall_keeps_the_project_agents_md_text | Removing the plugin is not a reason to lose the project's own instructions.
+test_uninstall_removes_every_hook_entry_not_just_the_gate | Measured defect: the marker named `run-gate.sh`, so `sessionStart` survived removal.
+test_init_places_the_rule_so_a_plugin_only_install_is_initialised | A plugin installed from a marketplace never runs `install.py`, so `init` must place it.
+test_init_twice_does_not_duplicate_the_rule | The contract is written once, but the rule must survive a forced re-init unchanged.
+test_installing_twice_does_not_duplicate_the_status_hook | One entry per event: two session hooks would both speak, and the second is noise.
+test_foreign_hooks_survive_both_the_install_and_the_removal | The installer owns its own entries and nothing else, in either direction.
+test_the_adapter_is_chosen_by_the_harness_not_by_the_environment | Invariant 40: sniffing supplies parameters, it never picks the adapter.
+## test_bugfixer_skill.py
+test_skill_directory_is_complete | SKILL.md plus every referenced support file must exist.
+test_the_declared_version_is_the_same_in_every_manifest | DoD-10: a version bumped in one place is a release the harness never sees.
+test_frontmatter_is_valid | Frontmatter carries the name, a trigger description, and a version.
+test_the_declared_version_is_the_same_in_every_manifest | DoD-10: a version bumped in one place is a release the harness never sees.
+test_required_sections_present | Every phase and every guard section is present.
+test_no_three_phase_scheme_survives | Invariant 16: two automata in one file means the agent reads the wrong one.
+test_all_eight_edges_are_named | Invariant 1 from the agent's side: a missing name is an unreachable exit.
+test_both_4_to_3_edges_are_distinguished | The defect the split exists for: one edge for two meanings created a dead end.
+test_counters_are_a_and_rechecks | ``A`` counts probes that reached a code change; ``R<h>`` repairs the test.
+test_every_record_marker_has_a_format_row | The agent writes what it reads here; a missing marker is a transition that never opens.
+test_table_form_is_named_as_wrong | Invariant 17b from the agent's side: the table form is invisible to the gate.
+test_working_on_is_one_pointer | Finding D-8: a marker per switch reads as a log, and two lines are refused.
+test_success_criterion_is_four_parts | Phase 5 success lists the RED test, e2e, no regression, and clean logging.
+test_ledger_forbids_a_second_file | The skill must put findings in the task file and forbid DEBUG.md.
+test_no_forbidden_research_or_privilege_instructions | The skill must not tell the agent to curl the web or run sudo.
+test_contract_template_covers_every_required_field | The template and the validator must require the same set — checked through the schema.
+test_skill_is_not_pinned_to_one_repository | SKILL.md must stay portable: no repo-specific commands or paths.
+test_referenced_paths_resolve | Every file the skill points at must exist relative to the skill directory.
+test_the_plugin_tree_carries_no_host_project_contract | A plugin installed into another project must not ship this repo's answers.
+test_template_defines_the_finding_block | The template carries the mandatory block fields of §5.2, not 2.1's prose fields.
+test_hypothesis_template_defines_the_subtask_block | ST-6: one format for ``H0`` and ``H1…Hn``, with the derived status explained.
+test_session_start_is_wired_where_the_harness_accepts_it | §18.4: `sessionStart` is registered as **best-effort**, and nothing depends on delivery.
+test_session_start_is_best_effort_and_says_so_where_it_is_read | A hook whose channel is broken must say so next to itself, or it reads as working.
+test_harnesses_without_a_context_channel_do_not_pretend_to_have_one | OpenCode has no session-context hook and OpenClaw's is `before_tool_call`-shaped.
+test_the_reversal_is_recorded_where_a_future_reader_will_find_it | A reversed decision that is not written down gets re-reversed every few months.
+test_skill_has_no_silent_fallbacks_in_its_own_instructions | The skill must not tell the agent to guess when a value is missing.
+test_invocation_table_covers_every_harness | An operator reading only SKILL.md must learn how to invoke it where they are.
+test_invocation_syntax_matches_the_matrix | Each harness's documented syntax is named, not a shared guess.
+test_search_fallback_is_a_normal_mode_not_a_failure | A harness with no search tool must skip step 3.3/3.4 without calling it degradation.
+test_no_harness_specific_tool_name_is_used_as_an_instruction | Tool names may only appear in the mapping table, never inside a step.
+test_fsm_surface_is_the_eight_edge_automaton | The adaptation may add vocabulary; the automaton itself is fixed by the spec.
+test_installer_lives_inside_the_skill | The installer must be part of the skill: a clone alone has to install itself.
+test_dry_run_writes_nothing | --dry-run reports the plan and leaves the filesystem untouched.
+test_installer_is_not_copied_into_itself | Copying install.py into the target would create a nested duplicate installer.
+test_unknown_target_fails_closed | An unknown target exits non-zero and names the known ones.
+test_openclaw_requires_explicit_dest | openclaw never guesses a home directory.
+test_all_is_project_scope_only | 'all' covers the targets a repository carries, never $HOME or openclaw.
+test_openclaw_with_dest_lands_under_skills | With --dest, openclaw installs into <dest>/skills/<id>/.
+test_install_is_idempotent_and_prunes_stale | A second run refreshes files and removes ones no longer in the source.
+test_destination_file_conflict_fails_closed | A destination that exists as a file is refused, not overwritten.
+test_installed_permissions_grant_no_world_access | Dirs stay <= 770 and files <= 660, everywhere in the installed tree (repo rule 5.9).
+test_the_plugin_tests_are_not_installed | The plugin's own tests live in its tree, and must not travel into a project.
+test_wrapper_contains_no_inline_python | The shell wrapper only forwards argv (repo rule 5.4).
+test_installer_has_no_python_syntax_errors | The installer must compile under the repo interpreter.
+test_skill_id_comes_from_frontmatter_not_the_directory | A clone can be named anything; the installed folder must still be the skill id.
+test_vcs_metadata_is_never_copied | A clone passed as the source must not ship its history into the skill.
+test_project_targets_map_to_expected_paths | Each project-scope environment resolves to its documented directory.
+test_personal_targets_go_to_home | User-level targets resolve under $HOME, so one install covers every project.
+test_opencode_global_path_is_config_not_home | OpenCode's global root is ~/.config/opencode/skills, not ~/.opencode/skills.
+test_readme_describes_the_automaton_the_code_implements | The README is the operator's first source; drift there misleads immediately.
+test_readme_documents_every_target | The README must not drift from the installer's target table.
+## test_bugfixer_templates_v3.py
+test_workflow_example_parses_with_the_ledger_readers | A documented example the gate cannot read teaches a format that fails.
+test_workflow_example_satisfies_the_proven_contract | The example claims CONFIRMED, so it must carry the proofs ``PROVEN`` reads.
+test_workflow_results_table_has_the_required_columns | 'Changed' is not 'better': the columns are what make the numbers checkable.
+test_workflow_names_the_resolution_rule | Two metrics moving in opposite ways is a choice, and the choice must be named.
+test_workflow_does_not_teach_the_three_phase_cycle | Two automata in the reference is the same defect as two in SKILL.md.
+test_finding_template_parses_as_a_record | Every fenced block in the finding template must be readable by the parser.
+test_hypothesis_template_parses_as_a_hypothesis | The hypothesis template must produce a block the reader accepts.
+test_templates_use_the_long_dash_in_headings | A short hyphen is not a heading: the parser would see no block at all.
+## test_bugfixer_terminal_fields_v3.py
+test_blocked_without_a_reason_names_the_reason_field | A forgotten `Причина:` is the agent's mistake to fix, so the refusal says so.
+test_blocked_without_logs_names_the_logs_field | Logs are the other half of `BLOCKED`: without them the operator has nothing to act on.
+test_blocked_with_an_unknown_reason_value_is_refused | The §9 list is closed; `Причина: because` is not one of the five values.
+test_well_formed_blocked_still_blocks | The fix must not turn a correct `BLOCKED` into an allow.
+test_partial_without_remaining_names_the_section | `PARTIAL` is a handover; without `## Remaining` there is nothing handed over.
+test_partial_with_an_empty_remaining_names_the_section | A heading with no items means the work is DONE, not partial.
+test_remaining_heading_copied_from_the_spec_is_accepted | §4 of the spec writes the marker as `## Remaining: <список>`.
+test_report_heading_copied_from_the_spec_is_accepted | §4 writes it as `## Report (поля §7)`; the parenthetical is not part of the name.
+test_remaining_as_a_table_is_accepted | The handover is a table in this repository's own `PARTIAL` ledger (TASK-079.2).
+test_remaining_as_a_numbered_list_is_accepted | `1.` is a list too; refusing it teaches the agent a spelling, not a discipline.
+test_status_without_a_report_names_the_report | A status with no `## Report` is a decision nobody can audit.
+## test_bugfixer_write_scope_v3.py
+test_a_log_is_writable_in_every_phase | Without this the full test output of step 1.4 has nowhere to go.
+test_the_raw_dump_directory_from_the_contract_is_writable | The contract names the directory; the gate must honour the name it read.
+test_prose_and_data_are_writable_in_phase_one | §2.3 asks the agent to document assumptions; a phase that forbids it cannot comply.
+test_behaviour_files_are_still_refused_in_phase_one | The negative control, and the reason the allow-list is by extension.
+test_editing_the_plugin_tree_is_refused_without_the_flag | A run that can rewrite its own guard has no guard.
+test_the_dev_plugin_flag_allows_the_plugin_tree | Developing the plugin with its own gate installed is the documented reason for the flag.
+test_the_flag_does_not_open_the_projects_code | A flag for one job must not become a skeleton key.
+test_the_flag_is_only_a_cli_argument | It cannot be reached from the payload: a harness must not be able to grant it.
+test_the_installers_files_are_writable_in_phase_one | Without them the plugin cannot install, and installation happens in any phase.
+test_the_changelog_is_refused_before_a_verdict | It says a change is finished; before phase 4 that is not known.
+test_the_changelog_is_refused_without_a_coverage_number | `tested:` is the whole point of the entry: it says the change is covered.
+test_the_changelog_is_refused_below_the_threshold | Under 90% the change is not covered enough to be recorded as done (invariant 49).
+test_the_changelog_is_allowed_at_the_threshold | The positive case: verdict, number, threshold met, command present.
+test_the_changelog_needs_a_way_to_verify_the_number | Without a coverage command the number is a claim nobody checked (§0).
+test_the_new_fields_do_not_add_a_fifth_required_point | §6 fixes four points; `Docs paths:`, `Min coverage:` and `Coverage command:` are details.
+test_docs_paths_reads_a_list_and_tolerates_absence | A project without the field still gets an answer: an empty list, not a crash.
+test_min_coverage_defaults_to_the_spec_number | The default belongs to §11a; a plugin constant that drifted from it would be a second norm.
+test_coverage_command_is_empty_when_the_project_names_none | Empty is meaningful: the gate then refuses to verify a `tested:` claim (§0).
+test_a_weak_directory_name_needs_test_files_inside | `spec/` is a guess; `spec/` with a test file is a fact (measured defect, 2026-11-27).
+test_a_strong_directory_name_is_accepted_without_files | `tests/` means tests in a fresh checkout, before the first file exists.
+test_docs_paths_detection_offers_the_root_when_markdown_is_there | Root prose is nearly universal, and refusing it would refuse doc writes everywhere.
+test_coverage_command_detection_reads_the_manifest | A configured tool is evidence; its absence is a placeholder, not a guess.
+test_init_writes_the_three_new_fields | The template and the validator share one schema; a field one knows and the other does not
+test_a_doc_write_with_no_readable_target_is_not_documentation | An empty target cannot be shown to be prose, so it falls through to the code rule.
+test_a_log_write_with_no_readable_target_is_not_a_dump | Same rule for logs: silence is not a destination.
+test_a_changelog_edit_without_content_is_refused | An edit that does not carry the new text cannot be checked, so it is not assumed fine.
+test_a_green_run_allows_the_entry | The positive case: every test passed, coverage above threshold.
+test_a_partially_failing_run_is_not_green | §11a: the threshold is about coverage, not about the share of tests that passed.
+test_no_green_marker_at_all_is_refused | A verdict without a run is not evidence that the suite passes.
+test_a_regression_after_the_green_run_is_refused | A green marker before a later regression describes a tree that no longer exists (§9).
+test_a_regression_before_the_green_run_does_not_block | Order decides: a regression already fixed by the green run is history.

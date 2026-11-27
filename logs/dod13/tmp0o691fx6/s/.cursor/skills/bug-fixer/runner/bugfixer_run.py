@@ -1,0 +1,745 @@
+#!/usr/bin/env python3
+"""Drive a coding agent through the bug-fixer phases (TASK-080).
+
+The gate in ``skills/bug-fixer/hooks/`` polices what an agent may do inside a
+pass. This script polices whether the loop continues at all, and it decides that
+on evidence the agent cannot fake: the test runner's exit code and the failing
+test ids.
+
+    bugfixer_run.py --ledger tasks/TASK-1.md --test-cmd "make test" --agent cursor
+    bugfixer_run.py ... --dry-run
+    bugfixer_run.py ... --agent command --agent-cmd 'fake-agent {prompt}'
+
+Design note on why the two controls are separate: an agent can write
+``STATUS: DONE`` in prose, so "done" is never read from its output. Only a green
+suite with the Phase-1 RED test still passing ends a run as ``DONE``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Final, Sequence
+
+#: This file lives at <skill>/runner/bugfixer_run.py, so the skill directory is two up.
+SKILL_DIR: Final[Path] = Path(__file__).resolve().parent.parent
+STATE_CLI: Final[Path] = SKILL_DIR / "hooks" / "bugfixer_gate_state.py"
+_HOOKS: Final[Path] = SKILL_DIR / "hooks"
+
+if str(_HOOKS) not in sys.path:
+    sys.path.insert(0, str(_HOOKS))
+
+import bugfixer_gate as ledger_readers  # noqa: E402 - path set up above
+
+#: Statuses that end a run without further passes.
+TERMINAL_STATUSES: Final[tuple[str, ...]] = (
+    "BLOCKED",
+    "DONE",
+    "PARTIAL",
+    "LIMIT_REACHED",
+)
+
+#: Edges tried, in order, when a pass leaves a phase ready to move on. The guard
+#: decides: the runner never forces a transition, it only offers the edge that the
+#: phase's own evidence would justify.
+_EDGES_FROM: Final[dict[int, tuple[tuple[str, int], ...]]] = {
+    1: (("REPRODUCED", 2),),
+    2: (("ALREADY_TRIED", 3), ("FIRST_GUESS", 4)),
+    3: (("HYPOTHESIS_READY", 4),),
+    4: (("PROVEN", 5), ("NEXT_IN_QUEUE", 4), ("QUEUE_EXHAUSTED", 3), ("DEEPEN_SAME", 3)),
+}
+
+
+#: Commands that must never appear: the agent runs unprivileged, per repo rule 6.2.
+_FORBIDDEN_CMDS: Final[tuple[str, ...]] = ("sudo", "su", "doas", "pkexec")
+
+#: How long one agent pass may take before it is treated as a failed pass.
+_DEFAULT_PASS_TIMEOUT_SEC: Final[int] = 20 * 60
+
+#: Cap on captured output per stream, so a runaway agent cannot fill the disk.
+_MAX_CAPTURE_BYTES: Final[int] = 4 * 1024 * 1024
+
+
+@dataclass
+class PassResult:
+    """Outcome of one agent + test pass.
+
+    Attributes:
+        index: 1-based pass number.
+        phase: Phase the pass ran in, as observed before it started.
+        agent_exit: Agent process exit code, or ``None`` when it timed out.
+        test_exit: Test command exit code, or ``None`` when not run.
+        failing: Sorted ids of failing tests, used for the no-progress check.
+        changed: Whether the ledger changed during the pass.
+        prompt_sha: Short hash of the prompt, for the record.
+    """
+
+    index: int
+    phase: int
+    agent_exit: int | None
+    test_exit: int | None
+    failing: list[str] = field(default_factory=list)
+    changed: bool = False
+    prompt_sha: str = ""
+
+
+@dataclass(frozen=True)
+class Plan:
+    """Resolved run configuration.
+
+    Attributes:
+        ledger: Ledger file for this bug.
+        test_cmd: Command that decides success.
+        agent: Adapter id.
+        agent_cmd: Template for the ``command`` adapter.
+        max_passes: Hard cap on passes.
+        run_dir: Where artifacts go.
+        pass_timeout: Seconds allowed per agent pass.
+    """
+
+    ledger: Path
+    test_cmd: str
+    agent: str
+    agent_cmd: str
+    max_passes: int
+    run_dir: Path
+    pass_timeout: int
+    workdir: Path
+
+
+def _fail(message: str) -> "NoReturn":  # noqa: F821 - typing only
+    """Abort with a message that says how to fix the cause."""
+    print(f"bugfixer-run: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def _contains_forbidden(command: str) -> str | None:
+    """Return the forbidden privileged command found in ``command``, if any.
+
+    Args:
+        command: Shell command line to inspect.
+
+    Returns:
+        The offending token, or ``None``.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    for token in tokens:
+        base = token.rsplit("/", 1)[-1]
+        if base in _FORBIDDEN_CMDS:
+            return base
+    return None
+
+
+def _stamp() -> str:
+    """UTC timestamp for a run directory."""
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _current_phase(ledger: Path) -> int:
+    """Read the phase from the state CLI, defaulting to 1.
+
+    Args:
+        ledger: Ledger file.
+
+    Returns:
+        Phase number.
+    """
+    result = subprocess.run(
+        [sys.executable, str(STATE_CLI), str(ledger)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return 1
+    try:
+        return int(json.loads(result.stdout).get("phase") or 1)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return 1
+
+
+def _ledger_status(ledger: Path) -> str:
+    """Read a terminal status from the ledger, using the gate's own reader.
+
+    A second copy of the status rule would drift from the first, and then the
+    runner and the gate would disagree about whether a run is still live.
+
+    Args:
+        ledger: Ledger file.
+
+    Returns:
+        ``BLOCKED``, ``LIMIT_REACHED``, ``DONE``, ``PARTIAL``, or ``RUNNING``.
+    """
+    return ledger_readers.read_status(ledger.read_text(encoding="utf-8", errors="replace"))
+
+
+_FAILING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:FAILED|FAILED tests/|ERROR)\s+(\S+)", re.MULTILINE
+)
+
+
+def _failing_ids(output: str) -> list[str]:
+    """Extract failing test ids from common runner output.
+
+    Args:
+        output: Combined stdout and stderr of the test command.
+
+    Returns:
+        Sorted, de-duplicated ids.
+    """
+    ids = {match.group(1).rstrip(":") for match in _FAILING_RE.finditer(output)}
+    return sorted(ids)
+
+
+def _prompt_for(phase: int, ledger: Path) -> str:
+    """Build the bounded prompt for one pass.
+
+    Each phase prompt names the markers that phase must write, because the runner
+    is headless: the agent cannot ask whether it recorded the right thing, and the
+    gate will refuse the transition it cannot see.
+
+    Args:
+        phase: Phase the run is in, as observed from the sidecar.
+        ledger: Ledger file the agent must write into.
+
+    Returns:
+        Prompt text.
+    """
+    common = (
+        f"You are running the bug-fixer skill on {ledger}.\n"
+        "Read SKILL.md and the project contract before acting.\n"
+        "No one is watching this run: there is no user to ask, so state assumptions "
+        "instead of asking questions.\n"
+        "Do not use sudo. Do not edit production code outside the current phase's rules.\n"
+        "Every marker the gate reads must be a whole line, never a table cell.\n"
+    )
+    if phase in (0, 1):
+        return common + (
+            "PHASE 0/1 (setup and baseline).\n"
+            "Step 0.3 first: this run is headless, so there is no user to ask. Do not skip "
+            "clarification — write your assumptions as `Assumption:` lines under "
+            "`## Clarifications`, at least one per unknown. An unstated assumption cannot be "
+            "challenged by the operator later.\n"
+            "Then write the failing test that reproduces the bug and run it. Run the full "
+            "suite unchanged to capture the baseline. Append to the ledger, each on its own "
+            "line: `FAILING TEST: <command> -> <observed>`, "
+            "`BASELINE: <pass>/<total>, red: <ids>`."
+        )
+    if phase == 2:
+        return common + (
+            "PHASE 2 (route). Do NOT change production code here.\n"
+            "If an `Attempt <k> consumed` line already exists and nothing is CONFIRMED, the "
+            "route is research: write `### F<n> — route` with `Kind | route`.\n"
+            "Otherwise create exactly one obvious hypothesis `### H0 — <assertion>` with "
+            "`Rank 1`, `Proposed` pointing at the route record, `Origin: description`, "
+            "`Mechanism`, `Prediction`, a `#### Records` bullet `- F<n> → PROPOSED`, and the "
+            "single line `Working on: H0`."
+        )
+    if phase == 3:
+        return common + (
+            "PHASE 3 (research). Do NOT change production code here; logging is allowed.\n"
+            "Collect logs, search by the exact lines you found, and write every candidate as "
+            "`### H<n>` with `Rank`, `Proposed`, `Origin: logs+search`, `Mechanism`, "
+            "`Prediction`, `Discriminator`, and `#### Records`.\n"
+            "Write a `Merge:` line on every pass, including `Merge: none — <why>`.\n"
+            "Name the next hypothesis to probe with `Working on: H<n>`."
+        )
+    if phase == 4:
+        return common + (
+            "PHASE 4 (probe). Exactly one hypothesis per pass, named by the existing "
+            "`Working on: H<n>` line — do not rewrite it to a different hypothesis.\n"
+            "Record the results table with the `До`, `После`, `Порог`, `Вывод` columns, then "
+            "the markers: `ФАКТ (RED):`, `ФАКТ (логи):`, `Bug: stable|flaky`, "
+            "`Attempt <k> consumed` after the code change, a `Secrets scan:` line, and "
+            "`ФАКТ (GREEN):`. Finish with one `### F<n>` block (`Kind | probe`) whose "
+            "`Outcome` states the verdict.\n"
+            "A refuted probe records `Revert:` before moving on; a partial one records "
+            "`ФАКТ (дельта):` with three numbers, or `ФАКТ (регрессия): <test>` and a "
+            "`Revert:`."
+        )
+    return common + (
+        "PHASE 5 (decide). Rerun the full suite plus the Phase-1 failing test unless pass 4 "
+        "already ran it with no code change since. Do not claim success: the orchestrator runs "
+        "the tests itself.\n"
+        "Check the four §9 conditions and the results table, then write `## Report` and exactly "
+        "one status: `STATUS: DONE` when all four hold, `STATUS: PARTIAL` with `## Remaining`, "
+        "or `STATUS: BLOCKED` with `Причина` and `Логи`."
+    )
+
+
+def _run_cmd(
+    command: Sequence[str] | str,
+    *,
+    cwd: Path,
+    timeout: int,
+    shell: bool,
+    env: dict[str, str] | None = None,
+) -> tuple[int | None, str]:
+    """Run a command, capturing output with a size cap.
+
+    Args:
+        command: argv list, or a shell string.
+        cwd: Working directory.
+        timeout: Seconds allowed.
+        shell: Whether to run through the shell.
+        env: Environment for the child; defaults to the parent's.
+
+    Returns:
+        ``(exit_code, combined_output)``; exit code is ``None`` on timeout.
+    """
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(cwd),
+            shell=shell,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"TIMEOUT after {timeout}s"
+    output = (completed.stdout or "") + (completed.stderr or "")
+    return completed.returncode, output[-_MAX_CAPTURE_BYTES:]
+
+
+def _agent_argv(plan: Plan, prompt: str) -> list[str]:
+    """Build the agent invocation for one pass.
+
+    Args:
+        plan: Resolved configuration.
+        prompt: Prompt text.
+
+    Returns:
+        argv list.
+    """
+    if plan.agent == "cursor":
+        return [
+            "cursor-agent",
+            "-p",
+            "--force",
+            "--output-format",
+            "text",
+            prompt,
+        ]
+    if "{prompt}" not in plan.agent_cmd:
+        _fail("--agent-cmd must contain {prompt}")
+    return shlex.split(plan.agent_cmd.replace("{prompt}", shlex.quote(prompt)))
+
+
+def _agent_env() -> dict[str, str]:
+    """Environment for the agent pass.
+
+    The API-key prerequisite is checked in ``_resolve_plan`` so a dry run reports
+    it too; this only returns the environment the pass will run with.
+
+    Returns:
+        Environment mapping.
+    """
+    return dict(os.environ)
+
+
+def _advance(ledger: Path, target: int, evidence: str, *, edge: str | None = None) -> bool:
+    """Ask the FSM to advance, respecting its guards.
+
+    The runner never forces a phase: it offers the edge the pass's own evidence
+    would justify and lets the guard decide. A refusal is printed, not swallowed.
+
+    Args:
+        ledger: Ledger file.
+        target: Destination phase.
+        evidence: Why the transition is justified.
+        edge: Edge name; required when the phase pair has two meanings (``4→3``).
+
+    Returns:
+        ``True`` when the transition succeeded.
+    """
+    argv = [
+        sys.executable,
+        str(STATE_CLI),
+        str(ledger),
+        "advance",
+        str(target),
+        "--evidence",
+        evidence,
+    ]
+    if edge:
+        argv += ["--edge", edge]
+    result = subprocess.run(
+        argv,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        print(f"bugfixer-run: transition refused: {result.stderr.strip()}", file=sys.stderr)
+        return False
+    return True
+
+
+def _offer_transition(ledger: Path, phase: int, pass_index: int) -> int:
+    """Offer every edge out of ``phase``; the first whose guard agrees wins.
+
+    Ordering matters for the pair with two meanings: at ``4→3`` the refuted case is
+    offered before the partial one, and the guard's own verdict check rejects the
+    wrong one rather than the runner guessing.
+
+    Args:
+        ledger: Ledger file.
+        phase: Current phase.
+        pass_index: Pass number, for the evidence line.
+
+    Returns:
+        The phase reached, or ``phase`` when no guard agreed.
+    """
+    for edge_name, target in _EDGES_FROM.get(phase, ()):
+        evidence = f"pass {pass_index}: {edge_name} offered by the orchestrator"
+        if _advance(ledger, target, evidence, edge=edge_name):
+            return target
+    return phase
+
+
+def _has_results_table(ledger: Path) -> bool:
+    """Whether the ledger's most recent probe carries a §11 results table.
+
+    Runner-side success is stricter than "the suite is green": a green suite with no
+    before/after numbers is the case the gate refuses at ``PROVEN``, and a runner that
+    accepted it would report a fix nobody can check.
+
+    Args:
+        ledger: Ledger file.
+
+    Returns:
+        ``True`` when the current probe record has the required columns.
+    """
+    text = ledger.read_text(encoding="utf-8", errors="replace")
+    probes = [record for record in ledger_readers.parse_records(text) if record.kind == "probe"]
+    if not probes:
+        return False
+    body = probes[-1].body
+    for row in re.findall(r"^\|.*\|[ \t]*$", body, re.MULTILINE):
+        normalized = row.lower()
+        if all(column in normalized for column in ("до", "после", "порог", "вывод")):
+            return True
+    return False
+
+
+def _append_finding(ledger: Path, result: PassResult) -> None:
+    """Append one ``### F<n>`` block describing the pass.
+
+    The block carries the orchestrator's own observations under a `Kind` the gate
+    recognises, and deliberately does **not** claim a verdict: a verdict belongs to
+    the agent, which saw the logs. Writing `CONFIRMED` here would let the pipeline
+    prove its own hypothesis.
+
+    Args:
+        ledger: Ledger file.
+        result: Pass outcome.
+    """
+    text = ledger.read_text(encoding="utf-8", errors="replace")
+    numbers = [int(m) for m in re.findall(r"^###\s+F(\d+)\b", text, re.MULTILINE)]
+    index = (max(numbers) + 1) if numbers else 1
+    failing = ", ".join(result.failing) if result.failing else "none"
+    block = (
+        f"\n### F{index} — orchestrator pass {result.index} (phase {result.phase})\n\n"
+        f"| Field | Value |\n|---|---|\n"
+        f"| Kind | research |\n"
+        f"| Scope | task |\n"
+        f"| Responds to | — |\n"
+        f"| Supersedes | — |\n"
+        f"| Iteration | {result.index} |\n"
+        f"| Outcome | ORCHESTRATOR PASS |\n\n"
+        f"| Field | Value |\n|---|---|\n"
+        f"| Agent exit | `{result.agent_exit}` |\n"
+        f"| Test exit | `{result.test_exit}` |\n"
+        f"| Failing | {failing} |\n"
+        f"| Ledger changed | {result.changed} |\n"
+        f"| Prompt sha | `{result.prompt_sha}` |\n"
+    )
+    with ledger.open("a", encoding="utf-8") as handle:
+        handle.write(block)
+
+
+def _write_status(ledger: Path, status: str) -> None:
+    """Write the terminal status line, replacing any previous status with a note.
+
+    The old line is kept, commented out, rather than deleted: the earlier status is
+    part of what happened, and a run that was ``BLOCKED`` and then ``DONE`` should
+    say so where a reader will see it.
+
+    Args:
+        ledger: Ledger file.
+        status: One of :data:`TERMINAL_STATUSES`.
+    """
+    text = ledger.read_text(encoding="utf-8", errors="replace")
+    text = re.sub(
+        r"^[ \t>*_-]{0,8}STATUS:[ \t]*(.*)$",
+        lambda match: f"<!-- was: STATUS: {match.group(1)} -->",
+        text,
+        flags=re.MULTILINE,
+    )
+    with ledger.open("w", encoding="utf-8") as handle:
+        handle.write(text.rstrip("\n") + f"\n\nSTATUS: {status}\n")
+
+
+def _resolve_plan(args: argparse.Namespace) -> Plan:
+    """Validate arguments and return a resolved plan.
+
+    Args:
+        args: Parsed arguments.
+
+    Returns:
+        Populated :class:`Plan`.
+
+    Raises:
+        SystemExit: On any missing or forbidden value.
+    """
+    ledger = Path(args.ledger).expanduser()
+    if not ledger.is_file():
+        _fail(f"no such ledger: {ledger}. Create the task file first; a run needs a place to write findings.")
+
+    if not args.test_cmd.strip():
+        _fail(
+            "--test-cmd is required. Guessing the full-suite command is the defect the gate exists "
+            "to prevent; pass e.g. --test-cmd 'make test'."
+        )
+
+    for candidate in (args.test_cmd, args.agent_cmd or ""):
+        found = _contains_forbidden(candidate)
+        if found:
+            _fail(
+                f"refusing a command containing `{found}`: the agent runs unprivileged (repo rule 6.2). "
+                "Run the privileged step yourself, outside the loop."
+            )
+
+    if args.max_passes < 1:
+        _fail("--max-passes must be at least 1")
+
+    if args.agent == "cursor" and shutil.which("cursor-agent") is None:
+        _fail("--agent cursor needs `cursor-agent` on PATH; install the Cursor CLI or use --agent command")
+
+    if args.agent == "command" and not args.agent_cmd:
+        _fail("--agent command needs --agent-cmd with a {prompt} placeholder")
+
+    if args.agent == "command" and "{prompt}" not in args.agent_cmd:
+        _fail("--agent-cmd must contain {prompt}; without it the agent would run on no task")
+
+    # Validated here so a dry run catches every missing prerequisite too: a dry run
+    # that passes on a configuration the real run would refuse is a lie.
+    if args.agent == "cursor" and not os.environ.get("CURSOR_API_KEY"):
+        _fail(
+            "the cursor adapter needs CURSOR_API_KEY. Export it first:\n"
+            "  export CURSOR_API_KEY=...   # create one in the Cursor dashboard\n"
+            "A key is never accepted on the command line: it would land in shell history."
+        )
+
+    # The agent and the test command must run where the code is, not where the skill
+    # lives. Default: the ledger's project, i.e. the ledger's parent directory.
+    workdir = Path(args.workdir).expanduser().resolve() if args.workdir else ledger.parent.resolve()
+    if not workdir.is_dir():
+        _fail(f"--workdir {workdir} is not a directory")
+
+    run_dir = Path(args.run_dir).expanduser() if args.run_dir else Path("logs") / f"bugfixer-run-{_stamp()}"
+
+    return Plan(
+        ledger=ledger,
+        test_cmd=args.test_cmd,
+        agent=args.agent,
+        agent_cmd=args.agent_cmd or "",
+        max_passes=args.max_passes,
+        run_dir=run_dir,
+        pass_timeout=args.pass_timeout,
+        workdir=workdir,
+    )
+
+
+def run(plan: Plan, *, dry_run: bool, resume: bool) -> int:
+    """Execute the loop.
+
+    Args:
+        plan: Resolved configuration.
+        dry_run: Print the plan without executing anything.
+        resume: Skip passes already recorded in the run directory.
+
+    Returns:
+        Process exit code: ``0`` only when the run ended ``DONE``.
+    """
+    if os.geteuid() == 0:
+        _fail("refusing to run as root; the agent would inherit full privileges (repo rule 6.2)")
+
+    ledger_before = plan.ledger.read_text(encoding="utf-8", errors="replace")
+    prompt_preview = _prompt_for(_current_phase(plan.ledger), plan.ledger)
+
+    if dry_run:
+        print(f"ledger:      {plan.ledger}")
+        print(f"test command: {plan.test_cmd}")
+        print(f"agent:       {plan.agent}")
+        print(f"max passes:  {plan.max_passes}")
+        print(f"run dir:     {plan.run_dir}")
+        print(f"phase now:   {_current_phase(plan.ledger)}")
+        print(f"status now:  {_ledger_status(plan.ledger)}")
+        print("\nfirst prompt:\n" + prompt_preview)
+        return 0
+
+    plan.run_dir.mkdir(parents=True, exist_ok=True)
+    if (plan.run_dir / "plan.json").exists() and not resume:
+        _fail(f"{plan.run_dir} already holds a run; pass --resume or choose another --run-dir")
+
+    previous_failing: list[str] | None = None
+    done = False
+
+    for index in range(1, plan.max_passes + 1):
+        artifact = plan.run_dir / f"pass-{index:02d}"
+        if resume and (artifact / "result.json").is_file():
+            print(f"==> pass {index}: already recorded, skipping")
+            saved = json.loads((artifact / "result.json").read_text(encoding="utf-8"))
+            previous_failing = saved.get("failing")
+            if saved.get("test_exit") == 0:
+                done = True
+                break
+            continue
+
+        status = _ledger_status(plan.ledger)
+        if status in TERMINAL_STATUSES:
+            print(f"==> ledger already {status}; stopping")
+            done = status == "DONE"
+            break
+
+        phase = _current_phase(plan.ledger)
+        prompt = _prompt_for(phase, plan.ledger)
+        artifact.mkdir(parents=True, exist_ok=True)
+        (artifact / "prompt.txt").write_text(prompt, encoding="utf-8")
+
+        print(f"==> pass {index} (phase {phase}): agent")
+        agent_exit, agent_output = _run_cmd(
+            _agent_argv(plan, prompt),
+            cwd=plan.workdir,
+            timeout=plan.pass_timeout,
+            shell=False,
+            env=_agent_env(),
+        )
+        (artifact / "agent.log").write_text(agent_output, encoding="utf-8")
+
+        print(f"==> pass {index}: tests (`{plan.test_cmd}`)")
+        test_exit, test_output = _run_cmd(
+            plan.test_cmd,
+            cwd=plan.workdir,
+            timeout=plan.pass_timeout,
+            shell=True,
+        )
+        (artifact / "tests.log").write_text(test_output, encoding="utf-8")
+
+        ledger_after = plan.ledger.read_text(encoding="utf-8", errors="replace")
+        failing = _failing_ids(test_output)
+        result = PassResult(
+            index=index,
+            phase=phase,
+            agent_exit=agent_exit,
+            test_exit=test_exit,
+            failing=failing,
+            changed=ledger_after != ledger_before,
+            prompt_sha=hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12],
+        )
+        (artifact / "result.json").write_text(json.dumps(result.__dict__, indent=2) + "\n", encoding="utf-8")
+
+        _append_finding(plan.ledger, result)
+        ledger_before = plan.ledger.read_text(encoding="utf-8", errors="replace")
+
+        # `A` is the cap the spec actually names. Reaching it is a terminal status,
+        # not a reason to keep passing: the attempt limit exists so the loop ends.
+        try:
+            attempts = ledger_readers.count_attempts(ledger_after)
+        except ledger_readers.CounterResetError as exc:
+            print(f"==> pass {index}: {exc}")
+            _write_status(plan.ledger, "BLOCKED")
+            break
+        if attempts >= ledger_readers.MAX_ATTEMPTS:
+            print(f"==> pass {index}: attempt cap reached ({attempts}) — LIMIT_REACHED")
+            _write_status(plan.ledger, "LIMIT_REACHED")
+            break
+
+        if test_exit == 0:
+            if not _has_results_table(plan.ledger):
+                print(
+                    f"==> pass {index}: suite green but no results table — the fix is "
+                    "unverifiable, so this is not DONE"
+                )
+                _write_status(plan.ledger, "BLOCKED")
+                break
+            print(f"==> pass {index}: suite green with a results table — DONE")
+            _write_status(plan.ledger, "DONE")
+            done = True
+            break
+
+        if previous_failing is not None and failing == previous_failing and not result.changed:
+            print(f"==> pass {index}: same failures and no ledger change — no progress, stopping")
+            _write_status(plan.ledger, "BLOCKED")
+            break
+        previous_failing = failing
+
+        # Offer the edges out of this phase; each guard decides on the ledger's own
+        # evidence. The runner never forces a transition.
+        _offer_transition(plan.ledger, phase, index)
+
+    else:
+        print(f"==> cap reached ({plan.max_passes} passes) without a green suite")
+        _write_status(plan.ledger, "BLOCKED")
+
+    print(f"==> run directory: {plan.run_dir}")
+    return 0 if done else 1
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    """Parse CLI arguments."""
+    parser = argparse.ArgumentParser(
+        prog="bugfixer_run.py",
+        description="Drive a coding agent through the bug-fixer phases, stopping on evidence.",
+    )
+    parser.add_argument("--ledger", required=True, help="task file the agent writes findings into")
+    parser.add_argument("--test-cmd", required=True, help="full-suite command; its exit code decides")
+    parser.add_argument("--agent", choices=("cursor", "command"), default="cursor")
+    parser.add_argument("--agent-cmd", default="", help="template for --agent command; must contain {prompt}")
+    parser.add_argument("--max-passes", type=int, default=5)
+    parser.add_argument("--pass-timeout", type=int, default=_DEFAULT_PASS_TIMEOUT_SEC)
+    parser.add_argument("--run-dir", default="")
+    parser.add_argument(
+        "--workdir",
+        default="",
+        help="where the agent and the test command run; defaults to the ledger's directory",
+    )
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--resume", action="store_true")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point.
+
+    Args:
+        argv: Argument list; defaults to ``sys.argv[1:]``.
+
+    Returns:
+        Process exit code.
+    """
+    args = _parse_args(argv)
+    plan = _resolve_plan(args)
+    return run(plan, dry_run=args.dry_run, resume=args.resume)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

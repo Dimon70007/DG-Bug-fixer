@@ -103,7 +103,8 @@ bug-fixer/
 │   ├── workflow.md               # discriminators, results tables, anti-patterns
 │   ├── init.md                   # step 0a: confirm what `init` derived
 │   ├── project-rule.md           # the rules file: why the main channel is not a hook
-│   └── project-contract.md       # TEMPLATE: fill this for your project
+│   ├── project-contract.md       # TEMPLATE: fill this for your project
+│   └── invariant-matrix.json     # spec §13: which test holds each invariant, both ways
 ├── bin/
 │   └── bugfixer                  # single entry point: `bugfixer doctor` / `init`
 ├── lib/
@@ -739,6 +740,12 @@ enforced, and the rest are listed rather than implied.
 that phase both guessed and edited — and the shortcuts it took (no "did the test actually fail"
 step, no secret scan) were invisible until someone compared the two paths. Now the edit happens
 in exactly one phase, so the asymmetric shortcut is impossible by construction.
+
+**Why the invariants have a matrix, not a paragraph.** "664 tests pass" says nothing about
+whether invariant 22 is one of them. `references/invariant-matrix.json` maps each of §13's 54
+invariants to the tests that hold it, and names the single one no test can hold (invariant 30,
+counting three runs) with its §12 reason. The check runs both ways: an unnamed test fails the
+suite as loudly as an unheld invariant, so new work cannot quietly protect nothing.
 
 **Why edges are named.** Two different reasons lead from probe back to research: all hypotheses
 refuted (go find new ones), and one hypothesis partially right (deepen that one). Keyed by phase

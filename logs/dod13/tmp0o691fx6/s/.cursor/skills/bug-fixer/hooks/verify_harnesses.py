@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""Verify that each agent harness actually blocks when the gate denies (TASK-079.2).
+
+A hook template that is valid JSON proves nothing. What matters is whether the
+harness refuses a call the gate denies. This script reports, per harness:
+
+* ``verified``        - the harness is installed, wired, and a deny was reproduced
+* ``wired``           - wired but the deny could not be reproduced here
+* ``not-wired``       - the harness is installed but no hook config was found
+* ``not-installed``   - the harness is not on PATH
+* ``not-automatable`` - installed, but it needs interactive sign-in to run
+
+The distinction is the point. A missing or unprovable harness must never read as
+a pass, or the table becomes a green wall that means nothing.
+
+Exit status: non-zero only when the gate itself fails its self-test. Missing
+harnesses are not failures, and the script never claims a deny it did not see.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Final
+
+#: The gate lives beside this file. Derived from this file's own directory rather than by
+#: walking up to a "repository root": the plugin is installed and cloned in layouts that have
+#: no ``skills/<id>/`` above them, and a path built for one layout silently pointed at
+#: nothing everywhere else.
+GATE: Final[Path] = Path(__file__).resolve().with_name("bugfixer_gate.py")
+
+#: The project whose harness configs to inspect: the git checkout this plugin sits in, or
+#: the plugin's own directory in a standalone clone. Outermost ``.git`` wins, matching the
+#: installer: inside a host project the plugin is a submodule with its own gitlink.
+def _project_root() -> Path:
+    """Find the checkout the harness configs belong to.
+
+    Returns:
+        Absolute path of the git checkout, or the plugin directory when there is none.
+    """
+    plugin_dir = Path(__file__).resolve().parent.parent
+    found = plugin_dir
+    for parent in plugin_dir.parents:
+        if (parent / ".git").exists():
+            found = parent
+    return found
+
+
+PROJECT_ROOT: Final[Path] = _project_root()
+
+#: Harness id -> (binary on PATH, project config path this plugin would use).
+HARNESSES: Final[dict[str, tuple[str, Path]]] = {
+    "cursor": ("cursor-agent", PROJECT_ROOT / ".cursor" / "hooks.json"),
+    "claude-code": ("claude", PROJECT_ROOT / ".claude" / "settings.json"),
+    "codex": ("codex", PROJECT_ROOT / ".codex" / "hooks.json"),
+    "opencode": ("opencode", PROJECT_ROOT / ".opencode" / "plugin" / "bugfixer-gate.ts"),
+    "openclaw": ("openclaw", PROJECT_ROOT / ".openclaw" / "plugins" / "bugfixer-gate.ts"),
+}
+
+
+@dataclass
+class Row:
+    """One line of the verification matrix."""
+
+    harness: str
+    installed: bool
+    config: str
+    verdict: str
+    note: str
+
+
+def _gate_selftest(tmp: Path) -> tuple[bool, str]:
+    """Run the gate against a synthetic deny to prove the gate itself works.
+
+    Args:
+        tmp: Scratch directory for the synthetic ledger.
+
+    Returns:
+        ``(ok, detail)`` where ``ok`` means a deny was reproduced.
+    """
+    (tmp / "bug-fixer.project.md").write_text("Test paths: tests/\n", encoding="utf-8")
+    ledger = tmp / "TASK-000.md"
+    ledger.write_text("## Iteration 1\n", encoding="utf-8")
+
+    payload = json.dumps({"tool_name": "write", "tool_input": {"file_path": "src/main.py"}})
+    result = subprocess.run(
+        [sys.executable, str(GATE), "--ledger", str(ledger)],
+        input=payload,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 2:
+        return False, f"expected exit 2, got {result.returncode}"
+    try:
+        body = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return False, "gate printed no JSON"
+    if body.get("permission") != "deny":
+        return False, f"expected permission deny, got {body.get('permission')!r}"
+    return True, "phase-1 src write denied"
+
+
+def _classify(harness: str, binary: str, config: Path) -> Row:
+    """Decide the matrix cell for one harness.
+
+    A binary outside ``PATH`` is reported as ``found-outside-path``, not as
+    ``not-installed``: the first version used ``shutil.which`` alone and called
+    ``cursor-agent`` missing while it sat in ``~/.local/bin``. "Absent" and "present
+    somewhere the shell cannot see" are different facts, and only one of them means
+    the harness is not installed.
+
+    Args:
+        harness: Harness id.
+        binary: Executable name to look for.
+        config: Where this repo would place the hook config.
+
+    Returns:
+        A populated :class:`Row`.
+    """
+    on_path = shutil.which(binary)
+    elsewhere = None if on_path else _find_outside_path(binary)
+    wired = config.exists()
+
+    if on_path is None and elsewhere is None:
+        return Row(
+            harness,
+            False,
+            "absent" if not wired else "present",
+            "not-installed",
+            f"{binary} not on PATH and not in a known install directory",
+        )
+    if on_path is None:
+        return Row(
+            harness,
+            True,
+            "absent" if not wired else "present",
+            "found-outside-path",
+            f"{binary} at {elsewhere}; add its directory to PATH to run it",
+        )
+    if not wired:
+        return Row(harness, True, "absent", "not-wired", "installed, no hook config in this repo")
+    return Row(
+        harness,
+        True,
+        "present",
+        "not-automatable",
+        "installed and wired; a deny needs an authenticated session",
+    )
+
+
+#: Directories harnesses install themselves into, none of which is on ``PATH`` by
+#: default on macOS. Checked only after ``PATH`` misses, so a normal install is
+#: reported normally.
+_OFF_PATH_DIRS: Final[tuple[Path, ...]] = (
+    Path.home() / ".local" / "bin",
+    Path.home() / ".cursor" / "bin",
+    Path("/usr/local/bin"),
+    Path("/opt/homebrew/bin"),
+)
+
+
+def _find_outside_path(binary: str) -> Path | None:
+    """Look for an executable in the known install directories.
+
+    Args:
+        binary: Executable name.
+
+    Returns:
+        Path to the executable, or ``None``.
+    """
+    for directory in _OFF_PATH_DIRS:
+        candidate = directory / binary
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def main() -> int:
+    """Print the verification matrix.
+
+    Returns:
+        ``2`` when the gate itself fails its self-test, else ``0``.
+    """
+    with tempfile.TemporaryDirectory() as raw:
+        ok, detail = _gate_selftest(Path(raw))
+
+    if not ok:
+        print(f"gate self-test: FAIL - {detail}", file=sys.stderr)
+        return 2
+    print(f"gate self-test: PASS - {detail}\n")
+
+    rows = [_classify(name, binary, config) for name, (binary, config) in HARNESSES.items()]
+
+    width = max(len(row.harness) for row in rows)
+    print(f"{'harness'.ljust(width)}  {'installed':9}  {'config':8}  {'verdict':16}  note")
+    print(f"{'-' * width}  {'-' * 9}  {'-' * 8}  {'-' * 16}  {'-' * 44}")
+    for row in rows:
+        print(
+            f"{row.harness.ljust(width)}  {str(row.installed).ljust(9)}  "
+            f"{row.config.ljust(8)}  {row.verdict.ljust(16)}  {row.note}"
+        )
+
+    verified = [row.harness for row in rows if row.verdict == "verified"]
+    print()
+    print(
+        f"verified denies: {len(verified)} of {len(rows)}"
+        + (f" ({', '.join(verified)})" if verified else "")
+    )
+    print("A harness that is not-installed or not-automatable is NOT a pass.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

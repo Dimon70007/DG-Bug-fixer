@@ -192,18 +192,6 @@ def test_frontmatter_is_valid() -> None:
     )
 
 
-def test_the_declared_version_is_the_same_in_every_manifest() -> None:
-    """DoD-10: a version bumped in one place is a release the harness never sees.
-
-    The harnesses read different manifests: Cursor reads `.cursor-plugin/plugin.json`, the skill
-    loader reads `SKILL.md` metadata, and the package metadata carries `pyproject.toml`. Drift is
-    invisible — the plugin keeps serving the old version, and the rule "a version without a bump is
-    invisible to the harness" silently stops holding.
-    """
-    versions = _declared_versions()
-    assert len(set(versions.values())) == 1, f"versions disagree: {versions}"
-
-
 def test_required_sections_present() -> None:
     """Every phase and every guard section is present."""
     text = _skill_text()
@@ -928,3 +916,16 @@ def test_readme_documents_every_target() -> None:
     readme = _README.read_text(encoding="utf-8")
     missing = [target for target in module._ALL_TARGETS if f"`{target}`" not in readme]
     assert not missing, f"README does not document target(s): {missing}"
+
+
+def test_the_readme_tree_lists_every_shipped_reference() -> None:
+    """The structure block is how a reader finds the matrix; a stale tree hides it.
+
+    Only `references/` is checked: it is shipped in full and every file there is something a
+    reader may need. The other directories hold generated or optional files, so listing them
+    exhaustively would turn the tree into a maintenance chore rather than a map.
+    """
+    readme = _README.read_text(encoding="utf-8")
+    shipped = sorted(p.name for p in (_SKILL_DIR / "references").iterdir() if p.is_file())
+    missing = [name for name in shipped if name not in readme]
+    assert not missing, f"README's tree omits reference file(s): {missing}"

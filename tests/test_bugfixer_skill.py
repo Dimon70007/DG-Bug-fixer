@@ -341,9 +341,47 @@ def test_no_forbidden_research_or_privilege_instructions() -> None:
             )
 
 
+def test_the_skill_forbids_inline_scripts_and_says_what_to_do_instead() -> None:
+    """Inline scripts are refused by the gate for a measured reason, so the skill must name it.
+
+    The gate cannot tell `print('a > b')` from `open('f','w')` without parsing the language, so
+    it treats everything inside a `-c` argument as shell and refuses a `>` or `|` there. That
+    produced 11 false refusals in one session, all on inline scripts (TASK-086 F26).
+
+    A prohibition without a replacement is a trap, so the test also requires the alternative:
+    write the script to a file and run it by name — and not to `logs/`, which is for output.
+    """
+    text = _skill_text()
+    section = text.split("## Запреты", 1)[-1]
+    assert "инлайном" in section or "инлайн-скрипт" in text, (
+        "the prohibitions list must forbid inline scripts"
+    )
+    assert "python3 -c" in text, "the forbidden shape must be spelled out, not implied"
+    assert "probes/" in text, (
+        "the skill must name where a one-off probe goes"
+    )
+    assert "В `logs/` скриптов не создавать" in text, (
+        "logs/ is for output; the prohibition must say so where a reader looks for it"
+    )
+    assert "pytest -q" in text, (
+        "a plain command must be shown as still allowed, or the ban reads as 'no shell at all'"
+    )
+
+
+def test_a_probe_is_deleted_once_its_finding_has_a_test() -> None:
+    """Probes are temporary by design; the skill must say when they stop being needed.
+
+    Without this rule a probe directory only grows: the measured cost was 102 `.py` files in
+    one plugin's log directory, none of them in git and none deleted afterwards.
+    """
+    text = _skill_text()
+    assert "Зонд живёт, пока находка не покрыта тестом" in text, (
+        "the skill must state that a probe expires when a test holds the claim"
+    )
+
+
 def test_contract_template_covers_every_required_field() -> None:
     """The template and the validator must require the same set — checked through the schema.
-
     The previous version looked for the words "Ledger", "Tests", "Search", "prohibitions".
     It passed while the template had no `Test paths:` at all, which is exactly the defect that
     left the gate unable to find its ledger. Comparing against the schema's field list makes

@@ -58,8 +58,12 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def append_event(ledger: Path, *, event: str, why: str, **fields: Any) -> dict[str, Any]:
+def append_event(ledger: Path, /, *, event: str, why: str, **fields: Any) -> dict[str, Any]:
     """Append one record to the journal.
+
+    ``ledger`` is positional-only: §5.4 also defines a record **field** named ``ledger``
+    (which journal a refusal belongs to), and without the ``/`` the two names collide —
+    ``append_event(ledger=x, ledger=y)`` raises before the record is built.
 
     Args:
         ledger: Task file the run works on.
@@ -67,7 +71,8 @@ def append_event(ledger: Path, *, event: str, why: str, **fields: Any) -> dict[s
         why: One-line reason: what allowed a transition, what was refused, how a probe
             ended. Line breaks are folded, because one record is one line.
         **fields: Record-specific fields from §5.4's table (``from``, ``to``, ``edge``,
-            ``hypothesis``, ``result``, ``status``, ``tool``, …).
+            ``hypothesis``, ``result``, ``status``, ``tool``, ``target``, ``phase``,
+            ``verdict_of``, ``ledger``, …).
 
     Returns:
         The record as written.

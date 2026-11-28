@@ -447,10 +447,22 @@
       ]
     },
     "36": {
-      "text": "**Отсутствие журнала не блокирует.** Нет журнала → прогон не начат, фаза 1; запись в файл задачи разрешена, отказа нет",
+      "text": "**Отсутствие журнала не блокирует.** Нет журнала → прогон не начат, фаза 1; запись в файл задачи разрешена, отказа нет. **Отказ объясним по журналу:** запись `deny` несёт `tool`, `target`, `phase`, `verdict_of` и `ledger` (§5.4) — по журналу видно, каким инструментом, на что, в какой фазе и по какому правилу отказано, и чей это журнал. Обязательность распространяется на записи, созданные после введения полей; журналы прежнего формата читаются без миграции",
       "tests": [
         "journal_v3::test_without_a_journal_the_run_is_in_phase_1",
-        "journal_v3::test_without_a_journal_the_task_file_is_still_writable"
+        "journal_v3::test_without_a_journal_the_task_file_is_still_writable",
+        "deny_fields_v3::test_a_shell_denial_records_the_command",
+        "deny_fields_v3::test_a_write_denial_records_the_path",
+        "deny_fields_v3::test_a_multiline_command_stays_one_record",
+        "deny_fields_v3::test_a_long_command_is_capped_and_marked",
+        "deny_fields_v3::test_a_secret_in_the_target_is_redacted",
+        "deny_fields_v3::test_a_denial_records_the_phase_it_happened_in",
+        "deny_fields_v3::test_phase_four_and_phase_one_records_differ",
+        "deny_fields_v3::test_verdict_of_names_the_rule_not_the_wording",
+        "deny_fields_v3::test_the_ledger_a_refusal_belongs_to_is_named",
+        "deny_fields_v3::test_an_ordinary_long_path_is_not_masked",
+        "deny_fields_v3::test_a_real_token_in_a_command_line_is_still_masked",
+        "deny_fields_v3::test_a_record_without_the_new_fields_still_reads"
       ]
     },
     "37": {
@@ -629,6 +641,22 @@
         "write_scope_v3::test_a_log_is_writable_in_every_phase",
         "write_scope_v3::test_the_raw_dump_directory_from_the_contract_is_writable",
         "write_scope_v3::test_a_log_write_with_no_readable_target_is_not_a_dump"
+      ]
+    },
+    "45a": {
+      "text": "**Кавычки — данные, не синтаксис.** `>`, `>>` и `|` внутри кавычек не создают записи: `grep \"a\\|mkdir\"` не пишет файл. Два исключения — исполняемое содержимое: вложенная команда (`bash -c '…'`, `python -c '…'`) и heredoc в интерпретатор (`python3 - <<'PY'`), потому что там текст кавычек и есть программа. Обратное тоже: heredoc в `cat` без перенаправления — не запись",
+      "tests": [
+        "quote_syntax_v3::test_a_read_only_command_with_quoted_metacharacters_is_not_a_write",
+        "quote_syntax_v3::test_a_real_write_is_still_a_write",
+        "quote_syntax_v3::test_a_quoted_metacharacter_yields_no_phantom_target",
+        "quote_syntax_v3::test_a_quoted_path_is_extracted_without_its_quotes",
+        "quote_syntax_v3::test_a_nested_command_still_writes",
+        "quote_syntax_v3::test_a_heredoc_into_an_interpreter_still_writes",
+        "quote_syntax_v3::test_a_heredoc_into_cat_is_not_a_write_by_itself",
+        "quote_syntax_v3::test_a_nested_print_of_a_redirect_is_refused",
+        "quote_syntax_v3::test_the_suite_command_is_still_allowed",
+        "skill::test_the_skill_forbids_inline_scripts_and_says_what_to_do_instead",
+        "skill::test_a_probe_is_deleted_once_its_finding_has_a_test"
       ]
     },
     "46": {

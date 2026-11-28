@@ -23,6 +23,7 @@ import argparse
 import hashlib
 import json
 import re
+import shlex
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -205,6 +206,116 @@ _WRITE_COMMAND_RE: Final[re.Pattern[str]] = re.compile(
     rf"|>>?\s*(?!(?:{_DISCARD_TARGET_RE}))[^&|\s]"
 )
 
+#: Programs whose quoted argument is a command line of its own: `bash -c '…'`, `python3 -c
+#: '…'`. The quotes belong to the shell, but their contents are executed, so the text inside
+#: them is syntax and must be scanned. Matched on the basename, because a real session runs
+#: `.venv/bin/python` and `/usr/bin/python3` far more often than a bare `python3` (measured:
+#: 85 of 169 interpreter calls in one session name a path).
+_INTERPRETER_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:^|[;&|]\s*)(?:sudo\s+|env\s+)*"
+    r"(?:[^\s;&|]*/)?(?:bash|sh|zsh|dash|ksh|python[0-9.]*|perl|ruby|node)\b"
+    r"(?:[^\s;&|]*\s)*?(?:^|\s)-[a-z]*c\b"
+)
+
+#: A quoted span, single or double, with escapes inside double quotes honoured.
+_QUOTED_SPAN_RE: Final[re.Pattern[str]] = re.compile(r"'([^']*)'|\"((?:[^\"\\]|\\.)*)\"")
+
+#: `<<'X'` or `<<-X`: a heredoc whose body is fed to whatever the segment runs.
+_HEREDOC_RE: Final[re.Pattern[str]] = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
+
+#: Interpreter names whose heredoc body is executed as a program.
+_HEREDOC_EXECUTORS: Final[frozenset[str]] = frozenset(
+    {"python", "python3", "bash", "sh", "zsh", "ksh", "perl", "ruby", "node"}
+)
+
+
+def _syntax_only(command: str) -> str:
+    """The command with quoted spans blanked out.
+
+    Shell metacharacters inside quotes are text, not syntax: `grep "a|mkdir"` searches for
+    five characters, it does not pipe into `mkdir`. Scanning the raw string classified that
+    as a production write — measured at 96 false refusals in 3312 real commands (2.9%), all
+    of them read-only (TASK-086 F12/F22).
+
+    Args:
+        command: Raw command line.
+
+    Returns:
+        The same string with every quoted span replaced by spaces. Length and offsets are
+        preserved, so callers can still slice the original by a match position.
+    """
+    return _QUOTED_SPAN_RE.sub(lambda match: " " * len(match.group(0)), command)
+
+
+def _executed_quoted_spans(command: str) -> list[str]:
+    """Quoted arguments that are themselves command lines.
+
+    `bash -c 'echo hi > f.txt'` writes a file, even though the `>` sits inside quotes: the
+    quotes are the shell's way of passing one argument, and the content of that argument is
+    executed. Blanking quotes without this step would open a bypass for every nested call.
+
+    Args:
+        command: Raw command line.
+
+    Returns:
+        The contents of each `-c` argument, in command order.
+    """
+    spans: list[str] = []
+    for match in _INTERPRETER_RE.finditer(command):
+        # The argument follows the `-c` flag; find the next quoted span after the match end.
+        tail = command[match.end() :]
+        quoted = _QUOTED_SPAN_RE.match(tail.lstrip()) if tail.strip() else None
+        if quoted is not None:
+            spans.append(quoted.group(1) if quoted.group(1) is not None else quoted.group(2))
+    return spans
+
+
+def _heredoc_bodies_are_executed(command: str) -> bool:
+    """Whether a heredoc body is fed to an interpreter, so the body is a program.
+
+    `python3 - <<'PY' … PY` and `bash <<'SH' … SH` run the body. A heredoc into `cat` is
+    data. Measured: this gate used to treat a heredoc into an interpreter as a read, so a
+    script that writes files passed the phase ban (TASK-086 F23).
+
+    The interpreter may sit inside a loop — `for f in …; do python3 - "$f" <<'PY' … PY; done`
+    — so the check is on the whole command, not on a single segment: searching only the
+    segments split on `;` looked at `do python3 …` as one word and missed it.
+
+    Args:
+        command: Raw command line.
+
+    Returns:
+        ``True`` when an interpreter is invoked anywhere in the command and a heredoc is
+        present.
+    """
+    if not _HEREDOC_RE.search(command):
+        return False
+    for match in re.finditer(r"(?:[^\s;&|]*/)?([a-z0-9_.-]+)", _syntax_only(command)):
+        if match.group(1) in _HEREDOC_EXECUTORS:
+            return True
+    return False
+
+
+def _is_write_command(command: str) -> bool:
+    """Whether a shell command would change the filesystem.
+
+    Reads only the part a shell acts on: text inside quotes is ignored, except where the
+    quotes are the shell's way of passing a command ({@link _executed_quoted_spans}) or a
+    heredoc body that an interpreter runs ({@link _heredoc_bodies_are_executed}).
+
+    Args:
+        command: Raw command line.
+
+    Returns:
+        ``True`` when the command writes.
+    """
+    if _WRITE_COMMAND_RE.search(_syntax_only(command)):
+        return True
+    for span in _executed_quoted_spans(command):
+        if _WRITE_COMMAND_RE.search(_syntax_only(span)):
+            return True
+    return _heredoc_bodies_are_executed(command)
+
 #: The destination of a shell redirection, as a path. Discard targets are excluded for the same
 #: reason: `/dev/null` is not a file the phase ban is about.
 _REDIRECT_TARGET_RE: Final[re.Pattern[str]] = re.compile(
@@ -297,10 +408,14 @@ class Verdict:
     Attributes:
         allow: Whether the call may proceed.
         reason: Message for the agent when denied; empty when allowed.
+        verdict_of: Stable identifier of the rule that refused (§5.4). Recorded in the
+            journal so a refusal can be classified without parsing its wording — a reworded
+            `why` used to break that classification silently (TASK-086 F10).
     """
 
     allow: bool
     reason: str = ""
+    verdict_of: str = ""
 
 
 @dataclass(frozen=True)
@@ -433,16 +548,19 @@ def _allow(note: str = "") -> Verdict:
     return Verdict(allow=True)
 
 
-def _deny(reason: str) -> Verdict:
+def _deny(reason: str, *, verdict_of: str) -> Verdict:
     """Return a deny verdict with an actionable reason.
 
     Args:
         reason: What the agent must do instead.
+        verdict_of: Stable identifier of the rule refusing (§5.4). Required rather than
+            defaulted: an unclassified refusal is the defect this field exists to remove,
+            and a default would let a new `_deny` site reintroduce it silently.
 
     Returns:
         A denying :class:`Verdict`.
     """
-    return Verdict(allow=False, reason=reason)
+    return Verdict(allow=False, reason=reason, verdict_of=verdict_of)
 
 
 def _fail_closed(message: str) -> NoReturn:
@@ -451,7 +569,7 @@ def _fail_closed(message: str) -> NoReturn:
     Args:
         message: What went wrong and how to fix it.
     """
-    verdict = _deny(f"{message} (gate failed closed; fix the state or stop the run)")
+    verdict = _deny(f"{message} (gate failed closed; fix the state or stop the run)", verdict_of="fail-closed")
     _emit(verdict)
     raise SystemExit(EXIT_DENY)
 
@@ -581,7 +699,7 @@ def _is_write_attempt(tool: str, args: dict[str, Any]) -> tuple[bool, str]:
                 f"shell tool {tool!r} carried no readable command in its payload "
                 f"(keys seen: {sorted(args)})"
             )
-        return bool(_WRITE_COMMAND_RE.search(command)), command
+        return _is_write_command(command), command
     if tool in _WRITE_TOOLS:
         return True, _target_path(args)
     if tool in _SAFE_TOOLS or tool.startswith(_MCP_PREFIXES):
@@ -1508,6 +1626,93 @@ def _test_paths(ledger: Path) -> list[str]:
 # --- decision ----------------------------------------------------------------
 
 
+#: Longest `target` written to a journal record, in characters. An 8 KB heredoc became an
+#: 8 019-character record before this cap (TASK-086, measured on a real command).
+_TARGET_LIMIT: Final[int] = 400
+
+
+def _is_path_finding(finding: secrets.Finding) -> bool:
+    """Whether a `base64` finding is really a filesystem path.
+
+    The `base64` rule is ``[A-Za-z0-9+/]{40,}={0,2}``. `/` is in its alphabet, so every path
+    of 41 characters or more matches it — measured, and it masked ordinary targets until
+    TASK-086 F25.
+
+    A path is told from a token by two properties a base64 blob does not have in combination:
+    it contains a `/`, and any `=` it carries is at the very end (base64 padding sits at the
+    end too, but a path never has `=` in the middle of a segment).
+
+    Only the `base64` rule is subject to this: a token prefix (`ghp_`, `sk-`, `AKIA`) or an
+    assignment is a credential wherever it appears.
+
+    Args:
+        finding: One scanner finding.
+
+    Returns:
+        ``True`` when the finding is a path and may be recorded as-is.
+    """
+    if finding.rule != "base64":
+        return False
+    text = finding.excerpt
+    # `excerpt` is the masked line; the matched run is what matters, so re-find it.
+    match = re.search(r"[A-Za-z0-9+/]{40,}={0,2}", text)
+    if match is None:
+        return False
+    run = match.group(0)
+    if "/" not in run:
+        return False
+    # A path has no `=` except possibly inside a filename; base64 padding is only at the end.
+    return "=" not in run.rstrip("=")
+
+
+def _journal_target(tool: str, args: dict[str, Any]) -> tuple[str, bool]:
+    """The goal of the call, as the journal should record it (§5.4).
+
+    The path for a write tool, the command line for a shell tool — the same value
+    ``_is_write_attempt`` already returns, re-derived here because a refusal can be decided
+    before that classification runs (an unknown tool, for instance).
+
+    A command line is the first place a credential reaches the journal, so the value passes
+    the §10 scanner: on a finding the field becomes ``<redacted: rule>`` and the value is not
+    written at all.
+
+    Args:
+        tool: Lowercased tool name.
+        args: Tool arguments.
+
+    Returns:
+        ``(target, truncated)``. ``target`` is capped at :data:`_TARGET_LIMIT` characters and
+        ``truncated`` says whether it was cut.
+    """
+    if tool in _SHELL_TOOLS:
+        raw = _shell_command(args)
+    else:
+        raw = _target_path(args)
+    if not raw:
+        return "", False
+
+    findings = secrets.scan(raw)
+    if findings:
+        # A path is not a credential, and the `base64` rule cannot tell them apart: its
+        # pattern is `[A-Za-z0-9+/]{40,}` and `/` is in that alphabet, so any path of 41+
+        # characters matches (measured: TASK-086 F25). Masking an ordinary path leaves the
+        # field saying nothing, which is the opposite of its purpose.
+        #
+        # The exemption is therefore per MATCH, not per rule and not per target shape: a
+        # base64-looking run is ignored only when it is a path — it contains a `/` and every
+        # `=` it carries is at the very end (base64 padding). A shell command keeps its
+        # exemptions for paths *inside* it, while a token pasted into the same command is
+        # still reported.
+        findings = [finding for finding in findings if not _is_path_finding(finding)]
+    if findings:
+        # A masked excerpt would still quote part of the value; only the rule is reported.
+        return f"<redacted: {findings[0].rule}>", False
+
+    if len(raw) > _TARGET_LIMIT:
+        return raw[:_TARGET_LIMIT], True
+    return raw, False
+
+
 def decide(
     *,
     ledger: Path | None,
@@ -1534,13 +1739,47 @@ def decide(
     """
     verdict = _decide(ledger=ledger, tool=tool, args=args, dev_plugin=dev_plugin)
     if ledger is not None and not verdict.allow:
+        target, truncated = _journal_target(tool, args)
+        fields: dict[str, Any] = {
+            "tool": tool,
+            # `phase` is read here rather than threaded through every `_deny` site: it is a
+            # property of the run, not of the rule, and the ledger is the only input the
+            # journal needs.
+            "phase": _phase_or_none(ledger),
+            "verdict_of": verdict.verdict_of,
+            "ledger": str(ledger.resolve()),
+        }
+        # A tool the gate cannot classify names no target. Omitting the field says "not
+        # recorded"; an empty string would read as "it tried nothing", a different fact.
+        if target:
+            fields["target"] = target
+        if truncated:
+            fields["truncated"] = True
         try:
-            journal.append_event(ledger, event="deny", why=verdict.reason, tool=tool)
+            journal.append_event(ledger, event="deny", why=verdict.reason, **fields)
         except OSError:
             # The journal is an observation, not a precondition (invariant 36): a full
             # disk must not turn a documented refusal into a crash the agent cannot read.
             pass
     return verdict
+
+
+def _phase_or_none(ledger: Path) -> int | None:
+    """The run's phase, or ``None`` when the journal cannot be read.
+
+    A refusal is journalled before the phase is necessarily known — a missing ledger, a
+    corrupt journal — and inventing "phase 1" would be the silent guess §0 forbids.
+
+    Args:
+        ledger: Ledger being enforced.
+
+    Returns:
+        Phase 1-5, or ``None``.
+    """
+    try:
+        return int(journal.state_of(ledger)["phase"])
+    except (journal.JournalError, OSError):
+        return None
 
 
 def _decide(
@@ -1568,7 +1807,8 @@ def _decide(
             "forbids. Run `bugfixer init` to write a starting contract, fill in its `<…>` "
             "placeholders, and confirm with `bugfixer doctor` (spec §6 phase 0). If this "
             "project does not use bug-fixer at all, remove the hook instead of leaving it "
-            "here — a gate that cannot be configured protects nothing."
+            "here — a gate that cannot be configured protects nothing.",
+            verdict_of="no-ledger",
         )
 
     text = ledger.read_text(encoding="utf-8", errors="replace")
@@ -1577,7 +1817,8 @@ def _decide(
             "this ledger was started under bug-fixer 2.1 (it has `## Iteration N` and no "
             "`### H<n>` hypotheses). Finish it under 2.1, or start a new ledger for this bug: "
             "its history has no hypotheses, so the 3.0 guards would refuse every transition "
-            "and the refusals would look like a broken gate."
+            "and the refusals would look like a broken gate.",
+            verdict_of="legacy-ledger",
         )
 
     try:
@@ -1588,12 +1829,14 @@ def _decide(
         return _deny(
             f"{exc}. The gate cannot prove this call is safe, so it is denied. "
             "Either the harness renamed a tool (fix the adapter) or the payload "
-            "shape changed (fix the gate)."
+            "shape changed (fix the gate).",
+            verdict_of="unknown-tool",
         )
     except UnreadableCommandError as exc:
         return _deny(
             f"{exc}. A shell call whose command cannot be read cannot be shown to be "
-            "test-only, so it is denied during an active run."
+            "test-only, so it is denied during an active run.",
+            verdict_of="unreadable-command",
         )
 
     if not is_write:
@@ -1607,7 +1850,8 @@ def _decide(
             f"the run journal {journal.journal_path(ledger).name} is written by the gate, not "
             "by the agent (spec §5.4, invariant 33). Every state change goes through the state "
             f"CLI, which appends one record: `{_cli_path()} state <ledger> advance <phase> "
-            "--evidence <why>`. Findings belong in the task file, not in the journal."
+            "--evidence <why>`. Findings belong in the task file, not in the journal.",
+            verdict_of="journal-write",
         )
 
     status = read_status(text)
@@ -1615,7 +1859,8 @@ def _decide(
     if status == "UNREADABLE":
         return _deny(
             "the ledger's `STATUS:` line is not one of RUNNING, DONE, PARTIAL, "
-            "LIMIT_REACHED, BLOCKED. An unreadable status is not read as RUNNING."
+            "LIMIT_REACHED, BLOCKED. An unreadable status is not read as RUNNING.",
+            verdict_of="unreadable-status",
         )
 
     # Invariants 19/28/29: a terminal status is written together with its evidence. The
@@ -1626,25 +1871,29 @@ def _decide(
         if field_problems:
             return _deny(
                 field_problems[0] + " The run is over either way, so this is written down "
-                "rather than fixed by editing code."
+                "rather than fixed by editing code.",
+                verdict_of="terminal-field",
             )
 
     if status in {"DONE", "PARTIAL"}:
         return _deny(
             f"This bug is already marked STATUS: {status}. A partial run is finished, not "
             "paused: the remainder is listed for the next task, so editing code here would "
-            "finish a run nobody is tracking. Start a new ledger."
+            "finish a run nobody is tracking. Start a new ledger.",
+            verdict_of="terminal-status",
         )
     if status == "LIMIT_REACHED":
         return _deny(
             f"This bug is marked STATUS: LIMIT_REACHED — the attempt cap ({MAX_ATTEMPTS}) is "
             "spent. Do not edit code: report, list every refuted hypothesis, and ask the user for "
-            "artefacts."
+            "artefacts.",
+            verdict_of="terminal-status",
         )
     if status == "BLOCKED":
         return _deny(
             "This bug is marked STATUS: BLOCKED. Do not edit code. Ask the user for the "
-            "artefacts you listed and start a new run when they arrive."
+            "artefacts you listed and start a new run when they arrive.",
+            verdict_of="terminal-status",
         )
 
     # Invariant 3: at ``A = 10`` the only correct next action is ``LIMIT_REACHED``. This is
@@ -1654,11 +1903,12 @@ def _decide(
     try:
         attempts = count_attempts(text)
     except CounterResetError as exc:
-        return _deny(str(exc))
+        return _deny(str(exc), verdict_of="counter-reset")
     if attempts >= MAX_ATTEMPTS:
         return _deny(
             f"Attempt cap reached ({attempts} of {MAX_ATTEMPTS}). Write "
-            "`STATUS: LIMIT_REACHED` with `## Report` instead of another change."
+            "`STATUS: LIMIT_REACHED` with `## Report` instead of another change.",
+            verdict_of="attempt-cap",
         )
 
     phase = read_phase(ledger)
@@ -1673,7 +1923,8 @@ def _decide(
             "writes to /tmp or any other system directory, in any phase. Keep temporary files "
             "inside the project — the `Raw dumps:` directory of the contract, or the task file "
             "itself. If a system file really has to change, print the command and let the user "
-            "run it (spec §15, invariant 43)."
+            "run it (spec §15, invariant 43).",
+            verdict_of="outside-project",
         )
     # Invariant 49: `CHANGELOG.md` is a claim that a change is finished, so it is judged by
     # evidence rather than by phase. Placed before the phase rules because "wait for phase 4"
@@ -1681,7 +1932,7 @@ def _decide(
     if _is_changelog_write(detail, tool):
         problem = _changelog_problem(args, ledger)
         if problem:
-            return _deny(problem)
+            return _deny(problem, verdict_of="changelog-evidence")
         # The claim is backed by evidence, so the phase ban does not apply to this file.
         return Verdict(allow=True)
 
@@ -1693,7 +1944,8 @@ def _decide(
             "code, and only as a probe of a named hypothesis. Phases 1-3 collect evidence; "
             f"Phase 5 judges it. Run `{_cli_path()} state <ledger> advance 4 --edge "
             "FIRST_GUESS --evidence \"H0 created\"` (or HYPOTHESIS_READY) once the "
-            "preconditions are written."
+            "preconditions are written.",
+            verdict_of="phase-ban",
         )
 
     if phase == 4 and phase_gate_enabled(text) and _is_code_write(
@@ -1702,24 +1954,27 @@ def _decide(
         try:
             active = active_hypothesis(text)
         except AmbiguousMarkerError as exc:
-            return _deny(str(exc))
+            return _deny(str(exc), verdict_of="ambiguous-marker")
         if not active:
             return _deny(
                 "Phase 4 edits must be a probe of a named hypothesis: add a line "
                 "`Working on: H<n>` pointing at an existing `### H<n>` block before touching "
-                "production code."
+                "production code.",
+                verdict_of="phase4-no-hypothesis",
             )
         if active not in parse_hypotheses(text):
             return _deny(
                 f"`Working on: {active}` points at a hypothesis that does not exist. Name one "
-                "that does, so the edit is attributable."
+                "that does, so the edit is attributable.",
+                verdict_of="phase4-unknown-hypothesis",
             )
 
     if table_form_attempt(text):
         return _deny(
             "The ledger writes `Attempt`/`Recheck` as a table row. Markers are whole lines: "
             "write `Attempt 3 consumed` and `Recheck H1 #2` on their own line. The gate reads "
-            "line starts, so a table cell is invisible and the transition never opens."
+            "line starts, so a table cell is invisible and the transition never opens.",
+            verdict_of="table-form",
         )
 
     # Only the cap is checked here: numbering is validated on `advance`, because a
@@ -1727,7 +1982,7 @@ def _decide(
     # slow each write for a rule that only matters when the phase changes.
 
     for problem in scan_records(text):
-        return _deny(problem)
+        return _deny(problem, verdict_of="secret-in-record")
 
     drift = task_drift(ledger, text)
     if drift:
@@ -1795,9 +2050,20 @@ def _shell_write_targets(command: str) -> list[str]:
     Returns:
         Candidate destination paths, in command order; empty when none is named.
     """
-    targets = [match.group(1) for match in _REDIRECT_TARGET_RE.finditer(command)]
-    for match in _WRITE_TARGET_COMMANDS_RE.finditer(command):
-        for token in match.group(1).split():
+    targets = [match.group(1) for match in _REDIRECT_TARGET_RE.finditer(_syntax_only(command))]
+    for match in _WRITE_TARGET_COMMANDS_RE.finditer(_syntax_only(command)):
+        # A write verb is syntax, so it is found in the unquoted skeleton; its ARGUMENTS must
+        # be sliced from the original, or a quoted path loses its quoting. `shlex` is used
+        # rather than `str.split`, because a path may contain a space: `rm -f "my file.py"`
+        # is one argument, and splitting it produced two phantom targets.
+        segment = command[match.start(1) : match.end(1)]
+        try:
+            tokens = shlex.split(segment)
+        except ValueError:
+            # An unbalanced quote cannot be tokenised; falling back to splitting is what the
+            # code did before, and it is still better than losing the target entirely.
+            tokens = segment.split()
+        for token in tokens:
             if token.startswith("-"):
                 continue
             targets.append(token[3:] if token.startswith("of=") else token)

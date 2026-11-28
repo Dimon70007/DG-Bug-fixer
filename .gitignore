@@ -5,3 +5,10 @@ __pycache__/
 # Run journals (spec §5.4) are local history: append-only, per task, never in git.
 *.bugfixer.jsonl
 *.bugfixer.json
+
+# Probes are working notes for one task: a top-level directory beside tests/ and hooks/,
+# because they are not tests (no test_ prefix, pytest never collects them) and not output
+# (logs/ holds dumps). Temporary by design — deleted when the task closes and its findings
+# are covered by tests. Not in git, so a clone carries no dead measurement code.
+probes/
+logs/

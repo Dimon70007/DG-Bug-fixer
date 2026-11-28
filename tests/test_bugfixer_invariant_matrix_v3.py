@@ -60,7 +60,7 @@ def test_the_matrix_holds_all_fifty_four_invariants() -> None:
     """
     invariants = _matrix()["invariants"]
     assert isinstance(invariants, dict)
-    expected = {str(n) for n in range(1, 50)} | {"17a", "17b", "27a", "27b", "27c", "45a"}
+    expected = {str(n) for n in range(1, 50)} | {"17a", "17b", "27a", "27b", "27c", "45a", "50"}
     assert set(invariants) == expected, (
         f"the matrix and §13 disagree: missing {sorted(expected - set(invariants))}, "
         f"extra {sorted(set(invariants) - expected)}"

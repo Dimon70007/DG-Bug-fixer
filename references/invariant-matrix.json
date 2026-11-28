@@ -730,6 +730,15 @@
         "write_scope_v3::test_a_tests_only_entry_may_not_cover_production_code",
         "write_scope_v3::test_a_listed_tests_path_must_exist"
       ]
+    },
+    "50": {
+      "text": "**Подзадача — файл в каталоге, а не файл с точкой.** `tasks/TASK-<n>/ST-<k>.md` под глоб `tasks/TASK-*.md` не попадает, поэтому не перехватывает леджер; `tasks/TASK-<n>.ST-<k>.md` попадает и перехватывает. `## Task`, `STATUS:`, `Counter reset:` и журнал живут только в основной задаче: подфайл их не содержит и леджером не является (§5.3a)",
+      "tests": [
+        "subtasks_v3::test_a_subtask_directory_does_not_steal_the_ledger",
+        "subtasks_v3::test_the_dotted_naming_would_steal_the_ledger",
+        "subtasks_v3::test_a_subtask_file_is_not_a_ledger",
+        "subtasks_v3::test_the_main_task_keeps_status_and_journal"
+      ]
     }
   },
   "support": {

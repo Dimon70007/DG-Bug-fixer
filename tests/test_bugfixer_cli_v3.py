@@ -202,6 +202,31 @@ def test_state_refuses_a_value_outside_the_machine(project: Path) -> None:
     assert "status must be one of" in refused.stderr
 
 
+def test_state_refuses_a_terminal_status_while_a_secret_remains(project: Path) -> None:
+    """The run cannot be declared finished beside an unresolved leak (§10, invariant 26).
+
+    Writing stays open so work can continue; the finish is what the ruling closes, because a
+    terminal status is the statement "this change is done". Paired: the same call succeeds once
+    the secret is gone.
+    """
+    project.write_text(
+        project.read_text(encoding="utf-8")
+        + "\n### F1 — probe\n| Field | Value |\n|---|---|\n"
+        "| Note | password = EXAMPLE-not-a-real-value |\n",
+        encoding="utf-8",
+    )
+    refused = _cli("state", str(project), "status", "DONE", cwd=project.parent)
+    assert refused.returncode == 2
+    assert "still holds a secret" in refused.stderr
+
+    clean = project.read_text(encoding="utf-8").replace(
+        "| Note | password = EXAMPLE-not-a-real-value |", "| Note | removed |"
+    )
+    project.write_text(clean, encoding="utf-8")
+    accepted = _cli("state", str(project), "status", "DONE", cwd=project.parent)
+    assert accepted.returncode == 0, accepted.stderr
+
+
 def test_secrets_scans_a_file_and_the_diff(tmp_path: Path) -> None:
     """Step 4.6a names this call; it has to be reachable, and to keep its exit codes."""
     leaked = tmp_path / "leak.txt"

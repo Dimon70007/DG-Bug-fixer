@@ -890,6 +890,11 @@ def _require_ledger(raw: str) -> Path:
 def _set_status(ledger: Path, raw: str) -> int:
     """Record a run status in the journal.
 
+    Terminal statuses are refused while the task still holds a secret: the finish is the statement
+    "this is done", and a leak beside it is an unfinished job (invariant 26, §10). Ordinary work
+    stays open — the operator's ruling of 2026-11-28 15:02 is that writing a secret is refused,
+    not access to a file that holds one — but the run cannot be declared clean.
+
     Args:
         ledger: Ledger file.
         raw: Status value from argv.
@@ -901,6 +906,17 @@ def _set_status(ledger: Path, raw: str) -> int:
     if status not in VALID_STATUSES:
         print(f"bugfixer-state: status must be one of {VALID_STATUSES}", file=sys.stderr)
         return 2
+    if status in {"DONE", "PARTIAL", "LIMIT_REACHED", "BLOCKED"}:
+        text = ledger.read_text(encoding="utf-8", errors="replace")
+        lingering = ledger_readers.secret_problems(ledger, text)
+        if lingering:
+            print(
+                "bugfixer-state: the task still holds a secret, so the run cannot be declared "
+                f"finished: {lingering[0]} Remove it first — the status would record a finished "
+                "run beside an unresolved leak (spec §10, invariant 26).",
+                file=sys.stderr,
+            )
+            return 2
     _journal.append_event(
         ledger, event="status", why="status recorded by the state CLI", status=status
     )

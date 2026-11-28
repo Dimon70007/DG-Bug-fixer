@@ -254,8 +254,37 @@ def test_a_null_value_is_not_a_secret(secrets_module) -> None:
     assert secrets_module.scan("token: null") == []
 
 
-def test_record_with_a_secret_is_denied(gate, tmp_path: Path) -> None:
-    """Records hold log output, so they are where a leaked value lands."""
+def test_writing_a_record_with_a_secret_is_denied(gate, tmp_path: Path) -> None:
+    """Records hold log output, so they are where a leaked value lands.
+
+    What is refused is the **write** of a secret (operator's ruling 2026-11-28 15:02). The
+    previous version of this test asserted the refusal while writing to `tests/a.py` — a file that
+    holds no secret — which made the rule about access rather than about writing.
+    """
+    (tmp_path / "bug-fixer.project.md").write_text("Test paths: tests/\n", encoding="utf-8")
+    ledger = tmp_path / "T.md"
+    ledger.write_text("## Task\nfix\n\n### F1 — research\n| Kind | research |\n", encoding="utf-8")
+    poisoned = (
+        "## Task\nfix\n\n### F1 — research\n"
+        "| Kind | research |\n"
+        "[DEBUG] api_key=abcdef123456\n"
+    )
+    verdict = gate.decide(
+        ledger=ledger, tool="write", args={"file_path": str(ledger), "content": poisoned}
+    )
+    assert not verdict.allow
+    # The refusal names the file and the line; the record id is no longer the only marker, because
+    # the scan now judges the body being written rather than the parsed `### F<n>` blocks.
+    assert "T.md" in verdict.reason
+    assert "abcdef123456" not in verdict.reason
+
+
+def test_a_lingering_secret_does_not_block_unrelated_work(gate, tmp_path: Path) -> None:
+    """Access is not writing: a secret already on disk must not stop ordinary edits.
+
+    Measured before the change (`probes/secret_presence_vs_write.py`): a single stale record
+    refused writes to the ledger, logs and documentation — work that writes no secret at all.
+    """
     (tmp_path / "bug-fixer.project.md").write_text("Test paths: tests/\n", encoding="utf-8")
     ledger = tmp_path / "T.md"
     ledger.write_text(
@@ -264,10 +293,7 @@ def test_record_with_a_secret_is_denied(gate, tmp_path: Path) -> None:
         "[DEBUG] api_key=abcdef123456\n",
         encoding="utf-8",
     )
-    verdict = gate.decide(ledger=ledger, tool="write", args={"file_path": "tests/a.py"})
-    assert not verdict.allow
-    assert "F1" in verdict.reason
-    assert "abcdef123456" not in verdict.reason
+    assert gate.decide(ledger=ledger, tool="write", args={"file_path": "tests/a.py"}).allow
 
 
 def test_clean_record_is_allowed(gate, tmp_path: Path) -> None:
@@ -283,17 +309,22 @@ def test_clean_record_is_allowed(gate, tmp_path: Path) -> None:
     assert gate.decide(ledger=ledger, tool="write", args={"file_path": "tests/a.py"}).allow
 
 
-def test_a_record_reporting_a_key_length_is_denied(gate, tmp_path: Path) -> None:
-    """The same record with a length instead of the fact: a length helps to recover the value."""
+def test_writing_a_key_length_is_denied(gate, tmp_path: Path) -> None:
+    """The same record with a length instead of the fact: a length helps to recover the value.
+
+    Judged on the write, per the ruling that separates writing from access.
+    """
     (tmp_path / "bug-fixer.project.md").write_text("Test paths: tests/\n", encoding="utf-8")
     ledger = tmp_path / "T.md"
-    ledger.write_text(
+    ledger.write_text("## Task\nfix\n\n### F1 — research\n| Kind | research |\n", encoding="utf-8")
+    poisoned = (
         "## Task\nfix\n\n### F1 — research\n"
         "| Kind | research |\n"
-        "[DEBUG] api_key_len=51 provider configured=yes\n",
-        encoding="utf-8",
+        "[DEBUG] api_key_len=51 provider configured=yes\n"
     )
-    verdict = gate.decide(ledger=ledger, tool="write", args={"file_path": "tests/a.py"})
+    verdict = gate.decide(
+        ledger=ledger, tool="write", args={"file_path": str(ledger), "content": poisoned}
+    )
     assert not verdict.allow
     assert "derived" in verdict.reason
 

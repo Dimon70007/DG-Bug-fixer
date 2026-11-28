@@ -2290,6 +2290,18 @@ def _decide(
     # field check runs *before* the status block so the refusal can name what is missing —
     # an agent told only "the run is over" cannot tell a forgotten field from a broken gate.
     if status in {"DONE", "PARTIAL", "LIMIT_REACHED", "BLOCKED"}:
+        # A run cannot be declared finished while a secret still sits in its own files. Ordinary
+        # work stays open (operator's ruling 2026-11-28 15:02: access is not refused); the finish
+        # is, because the status is the statement "this is done" (invariant 26, §10).
+        lingering = secret_problems(ledger, text)
+        if lingering:
+            return _deny(
+                "the task still holds a secret, so the run cannot be declared finished: "
+                + lingering[0]
+                + " Remove it first — the status would record a finished run beside an "
+                "unresolved leak (§10, invariant 26).",
+                verdict_of="secret-in-record",
+            )
         field_problems = terminal_status_problems(text, status)
         if field_problems:
             return _deny(
@@ -2411,14 +2423,160 @@ def _decide(
     # hook runs on every tool call and parsing the whole ledger each time would
     # slow each write for a rule that only matters when the phase changes.
 
-    for problem in secret_problems(ledger, text):
-        return _deny(problem, verdict_of="secret-in-record")
+    refusals, notes = _secret_findings_for_write(ledger, text, tool, args)
+    if refusals:
+        return _deny(refusals[0], verdict_of="secret-in-record")
+    if notes:
+        # A secret exists elsewhere but this write does not add one: invite, do not block. The
+        # operator's ruling is that invariant 26 forbids writing a secret, not working near one.
+        return _allow(
+            "a secret already exists in the task and is not being written now: "
+            + notes[0]
+            + " It is reported, not refused (§10: writing is refused, access is not)."
+        )
 
     drift = task_drift(ledger, text)
     if drift:
         return _allow(drift)
 
     return Verdict(allow=True)
+
+
+#: Fields that carry the **whole** new file body. A fragment (`new_string`) is not here: a fragment
+#: scanned alone misses a secret it introduces into surrounding text, which was measured as a real
+#: bypass (`probes/f19_bypass_check.py`).
+_NEW_TEXT_FIELDS: Final[tuple[str, ...]] = ("content", "newText", "file_text")
+
+
+def _prospective_body(
+    current: str, tool: str, args: dict[str, Any], target: Path, ledger: Path
+) -> str | None:
+    """The text the addressed file will contain after this call, or ``None`` when unknown.
+
+    Invariant 26 judges a record for secrets. Judging the **current** file made a fix impossible:
+    an edit that removes the offending line was refused because the scan read the line it was
+    about to delete (TASK-086 F19, mechanism measured in `probes/ha_scan_reads_disk.py`).
+
+    So the content about to be written is what gets scanned. When the payload does not carry it —
+    an edit shape the gate cannot reconstruct — the caller falls back to the file on disk, which is
+    stricter, not looser.
+
+    Args:
+        current: The addressed file's present contents.
+        tool: Lowercased tool name.
+        args: Tool arguments.
+        target: File the call addresses.
+        ledger: Active ledger, for resolving relative targets.
+
+    Returns:
+        The prospective contents, or ``None`` when they cannot be reconstructed.
+    """
+    if tool in _SHELL_TOOLS:
+        # A shell write goes through redirection or a heredoc; the gate does not reconstruct the
+        # result, and guessing it would be the silent answer §0 forbids.
+        return None
+
+    for field in _NEW_TEXT_FIELDS:
+        value = args.get(field)
+        if isinstance(value, str):
+            return value
+
+    # An edit carries a fragment, not a file. Scanning the fragment alone would miss a secret that
+    # the edit *introduces* into context the fragment does not contain (measured: a `new_string`
+    # with a secret was allowed because nothing applied it to the body). Apply it, or fall back.
+    old = args.get("old_string") or args.get("oldStr")
+    new = args.get("new_string") or args.get("newStr")
+    if isinstance(old, str) and isinstance(new, str):
+        if old in current:
+            return current.replace(old, new, 1)
+        return None
+    return None
+
+
+def _secret_findings_for_write(
+    ledger: Path, text: str, tool: str, args: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    """Secrets the write would produce, and secrets that already sit elsewhere (§10, invariant 26).
+
+    Invariant 26 forbids *writing* a secret. It does not forbid working while a secret exists
+    somewhere else — operator's ruling 2026-11-28 15:02: "the goal is to forbid writing secrets,
+    not to forbid access to files that hold them". The previous version scanned every sub-task file
+    on every write, so one stale record blocked the whole run, including edits to unrelated files
+    (`probes/secret_presence_vs_write.py`, measured).
+
+    The two questions are therefore separated and answered differently:
+
+    * the body **this call will write** → refusal, because that is the write of a secret;
+    * something already on disk **elsewhere** → a note, so the finding is not silently dropped while
+      the run keeps working.
+
+    Args:
+        ledger: Ledger file.
+        text: Ledger contents as they are on disk.
+        tool: Lowercased tool name.
+        args: Tool arguments.
+
+    Returns:
+        ``(refusals, notes)``. ``refusals`` is empty when the write introduces nothing.
+    """
+    target = _target_path(args)
+    addressed: Path | None = None
+    if target:
+        candidate = Path(target).expanduser()
+        addressed = candidate if candidate.is_absolute() else _project_of(ledger) / candidate
+        addressed = _normalized(addressed)
+
+    def describe(where: str, finding: secrets.Finding) -> str:
+        """One finding as a sentence naming the place and the rule.
+
+        Args:
+            where: File name the finding sits in.
+            finding: The scanner finding.
+
+        Returns:
+            The sentence.
+        """
+        return (
+            f"secret in {where} at {secrets.describe(finding)}. Values, lengths, hashes and "
+            "prefixes all help to recover it and are refused too (§10)."
+        )
+
+    refusals: list[str] = []
+    notes: list[str] = []
+    replaced = False
+    bodies: list[tuple[Path, str]] = [(_normalized(ledger), text)]
+    for path in subtask_files(ledger):
+        bodies.append(
+            (
+                _normalized(path),
+                path.read_text(encoding="utf-8", errors="replace") if path.is_file() else "",
+            )
+        )
+
+    for key, body in bodies:
+        is_target = addressed is not None and key == addressed
+        if is_target:
+            prospective = _prospective_body(body, tool, args, key, ledger)
+            if prospective is not None:
+                body = prospective
+                replaced = True
+        for finding in secrets.scan(body):
+            if is_target:
+                refusals.append(describe(key.name, finding))
+            else:
+                notes.append(describe(key.name, finding))
+
+    # A file that does not exist yet is not in `subtask_files` — it lists what is on disk. So
+    # creating one was never scanned: measured, `Write` of a record with a secret to a new
+    # `TASK-<n>/ST-1.md` was allowed while the same write to an existing file was refused.
+    known = {key for key, _ in bodies}
+    if addressed is not None and not replaced and addressed not in known:
+        prospective = _prospective_body("", tool, args, addressed, ledger)
+        if prospective is not None:
+            for finding in secrets.scan(prospective):
+                refusals.append(describe(addressed.name, finding))
+
+    return refusals, notes
 
 
 def phase_gate_enabled(ledger_text: str) -> bool:
@@ -2810,6 +2968,17 @@ def _changelog_problem(args: dict[str, Any], ledger: Path) -> str:
 
     content = args.get("content") or args.get("new_string") or args.get("newStr") or ""
     text = ledger.read_text(encoding="utf-8", errors="replace")
+    # A run with a secret still on disk cannot be declared finished: writing is what invariant 26
+    # forbids, and a changelog entry is the statement "this change is done". Ordinary work stays
+    # open (operator's ruling 2026-11-28 15:02: access is not refused), but the finish is.
+    lingering = secret_problems(ledger, text)
+    if lingering:
+        return (
+            "the task still holds a secret, so the change cannot be declared finished: "
+            + lingering[0]
+            + " Remove it first — writing the entry would record a completed change beside an "
+            "unresolved leak (§10, invariant 26)."
+        )
     if not re.search(r"^\*\*Verdict\.\*\*", text, re.MULTILINE):
         return (
             "`CHANGELOG.md` is written only after a probe reached a verdict (spec §11a): the "

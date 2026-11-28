@@ -12,3 +12,4 @@ __pycache__/
 # are covered by tests. Not in git, so a clone carries no dead measurement code.
 probes/
 logs/
+.coverage.*

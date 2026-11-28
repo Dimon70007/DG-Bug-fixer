@@ -296,6 +296,97 @@ def _heredoc_bodies_are_executed(command: str) -> bool:
     return False
 
 
+def _heredoc_body_summary(lines: list[str]) -> str:
+    """The one-line stand-in for a heredoc body.
+
+    A body is data, not a call: a 10 MB file passed to a command says nothing about *what* was
+    invoked, while a journal is meant to answer exactly that. The call line stays verbatim and
+    the body becomes a size — enough to tell a one-line stub from a whole source file, without
+    turning the journal into a copy of the data (TASK-086 ST-10).
+
+    Args:
+        lines: Body lines, delimiters excluded.
+
+    Returns:
+        ``[body: N lines, M bytes]``. The size counts the trailing newline heredoc hands to the
+        command, so it equals what the command receives; the count is UTF-8, not characters.
+    """
+    text = "".join(f"{line}\n" for line in lines)
+    return f"[body: {len(lines)} lines, {len(text.encode('utf-8'))} bytes]"
+
+
+def _heredoc_delimiter(line: str) -> tuple[str, bool] | None:
+    """The heredoc opened on a line of the call part, if there is one.
+
+    `<<` inside quotes is text, not an operator: `grep "x << y"` searches for a string. The
+    delimiter name, on the other hand, is usually quoted (`<<'EOF'`), so the operator is found in
+    the raw line and then rejected when its position falls inside a quoted span.
+
+    Args:
+        line: One line of the command.
+
+    Returns:
+        ``(terminator, strips_tabs)`` for `<<NAME` / `<<-NAME`, or ``None``. ``strips_tabs``
+        follows the `<<-` form, where the terminator may be indented.
+    """
+    for match in _HEREDOC_RE.finditer(line):
+        quoted_spans = [
+            (span.start(), span.end()) for span in _QUOTED_SPAN_RE.finditer(line)
+        ]
+        if any(start <= match.start() < end for start, end in quoted_spans):
+            continue
+        return match.group(2), match.group(0).startswith("<<-")
+    return None
+
+
+def _command_without_heredoc_bodies(command: str) -> str:
+    """The command with every heredoc body replaced by its size summary.
+
+    The delimiter lines stay: they say a heredoc is there and what it was called, which is part
+    of the call. Only the text between them is a payload.
+
+    A heredoc whose terminator never arrives is left alone rather than guessed at: an unclosed
+    body is not a shape the journal can describe honestly, and truncating it would be the same
+    silent answer this rule removes.
+
+    Args:
+        command: Raw command line.
+
+    Returns:
+        The command line with bodies summarised, or unchanged when it carries none.
+    """
+    lines = command.split("\n")
+    if len(lines) == 1:
+        return command
+    rebuilt: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        rebuilt.append(line)
+        index += 1
+        # One heredoc per line of the call part: `cat <<A <<B` is rare, and two passes would need
+        # ordering the gate has no reason to model.
+        opener = _heredoc_delimiter(line)
+        if opener is None:
+            continue
+        terminator, strips_tabs = opener
+        body: list[str] = []
+        while index < len(lines):
+            candidate = lines[index].lstrip("\t") if strips_tabs else lines[index]
+            if candidate == terminator:
+                break
+            body.append(lines[index])
+            index += 1
+        if index >= len(lines):
+            # Unterminated: the rest was never a body, so put it back and stop summarising.
+            rebuilt.extend(body)
+            break
+        rebuilt.append(_heredoc_body_summary(body))
+        rebuilt.append(lines[index])
+        index += 1
+    return "\n".join(rebuilt)
+
+
 def _is_write_command(command: str) -> bool:
     """Whether a shell command would change the filesystem.
 
@@ -1711,11 +1802,6 @@ def _test_paths(ledger: Path) -> list[str]:
 # --- decision ----------------------------------------------------------------
 
 
-#: Longest `target` written to a journal record, in characters. An 8 KB heredoc became an
-#: 8 019-character record before this cap (TASK-086, measured on a real command).
-_TARGET_LIMIT: Final[int] = 400
-
-
 def _is_path_finding(finding: secrets.Finding) -> bool:
     """Whether a `base64` finding is really a filesystem path.
 
@@ -1750,31 +1836,37 @@ def _is_path_finding(finding: secrets.Finding) -> bool:
     return "=" not in run.rstrip("=")
 
 
-def _journal_target(tool: str, args: dict[str, Any]) -> tuple[str, bool]:
+def _journal_target(tool: str, args: dict[str, Any]) -> str:
     """The goal of the call, as the journal should record it (§5.4).
 
     The path for a write tool, the command line for a shell tool — the same value
     ``_is_write_attempt`` already returns, re-derived here because a refusal can be decided
     before that classification runs (an unknown tool, for instance).
 
+    The command line is recorded **whole** (TASK-086 ST-10). It used to be cut at 400
+    characters with a ``truncated`` flag, and a cut field answers "what was attempted" as
+    poorly as a missing one: the start of a heredoc is visible, the point of it is not. The
+    one thing that is not part of the call is a heredoc *body* — data, not invocation — so the
+    body becomes ``[body: N lines, M bytes]`` and every argument stays.
+
     A command line is the first place a credential reaches the journal, so the value passes
     the §10 scanner: on a finding the field becomes ``<redacted: rule>`` and the value is not
-    written at all.
+    written at all. That rule is about secrets, not size, and the removal of the cap does not
+    touch it.
 
     Args:
         tool: Lowercased tool name.
         args: Tool arguments.
 
     Returns:
-        ``(target, truncated)``. ``target`` is capped at :data:`_TARGET_LIMIT` characters and
-        ``truncated`` says whether it was cut.
+        The target as it should be journalled; empty when the payload names none.
     """
     if tool in _SHELL_TOOLS:
         raw = _shell_command(args)
     else:
         raw = _target_path(args)
     if not raw:
-        return "", False
+        return ""
 
     findings = secrets.scan(raw)
     if findings:
@@ -1791,11 +1883,9 @@ def _journal_target(tool: str, args: dict[str, Any]) -> tuple[str, bool]:
         findings = [finding for finding in findings if not _is_path_finding(finding)]
     if findings:
         # A masked excerpt would still quote part of the value; only the rule is reported.
-        return f"<redacted: {findings[0].rule}>", False
+        return f"<redacted: {findings[0].rule}>"
 
-    if len(raw) > _TARGET_LIMIT:
-        return raw[:_TARGET_LIMIT], True
-    return raw, False
+    return _command_without_heredoc_bodies(raw) if tool in _SHELL_TOOLS else raw
 
 
 def decide(
@@ -1824,7 +1914,7 @@ def decide(
     """
     verdict = _decide(ledger=ledger, tool=tool, args=args, dev_plugin=dev_plugin)
     if ledger is not None and not verdict.allow:
-        target, truncated = _journal_target(tool, args)
+        target = _journal_target(tool, args)
         fields: dict[str, Any] = {
             "tool": tool,
             # `phase` is read here rather than threaded through every `_deny` site: it is a
@@ -1838,8 +1928,6 @@ def decide(
         # recorded"; an empty string would read as "it tried nothing", a different fact.
         if target:
             fields["target"] = target
-        if truncated:
-            fields["truncated"] = True
         try:
             journal.append_event(ledger, event="deny", why=verdict.reason, **fields)
         except OSError:

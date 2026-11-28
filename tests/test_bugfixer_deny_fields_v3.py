@@ -117,13 +117,17 @@ def _denials(ledger: Path) -> list[dict]:
 def test_a_shell_denial_records_the_command(gate, project: Path) -> None:
     """`tool: shell` alone cannot distinguish a heredoc into the ledger from a source edit.
 
-    This is the field F10 names as the one that makes 51 shell refusals unreadable.
+    This is the field F10 names as the one that makes 51 shell refusals unreadable. The call
+    line is recorded verbatim — redirection and destination included — so the refusal says
+    *what* was aimed at *where*.
     """
     command = "cat >> src/service.py <<'EOF'\ny = 2\nEOF"
     verdict = gate.decide(ledger=project, tool="shell", args={"command": command})
     assert not verdict.allow
     record = _denials(project)[0]
-    assert record.get("target") == command, f"target missing or altered: {record.get('target')!r}"
+    assert "cat >> src/service.py <<'EOF'" in record.get("target", ""), (
+        f"call line missing or altered: {record.get('target')!r}"
+    )
 
 
 def test_a_write_denial_records_the_path(gate, project: Path) -> None:
@@ -138,28 +142,95 @@ def test_a_multiline_command_stays_one_record(gate, project: Path) -> None:
     """A heredoc has newlines; the journal is JSON Lines, so the record must not split.
 
     The `why` field is folded for the same reason. `target` keeps its newlines because JSON
-    escapes them, and the round-trip has to be exact or the command cannot be replayed.
+    escapes them, and the round-trip has to be exact or the command cannot be replayed: the
+    call line, the body summary and the terminator come back as three separate lines.
     """
     command = "cat > src/service.py <<'EOF'\nline one\nline two\nEOF"
     gate.decide(ledger=project, tool="shell", args={"command": command})
     path = helpers.journal_path(project)
     lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(lines) == 1, "a record was split by the newlines inside the command"
-    assert json.loads(lines[0])["target"] == command
+    target = json.loads(lines[0])["target"]
+    assert target.splitlines()[0] == "cat > src/service.py <<'EOF'"
+    assert target.splitlines()[-1] == "EOF"
 
 
-def test_a_long_command_is_capped_and_marked(gate, project: Path) -> None:
-    """An 8 KB heredoc would become an 8 KB journal record; the field is capped and says so.
+def test_a_long_command_is_recorded_in_full(gate, project: Path) -> None:
+    """A long command is a command: it is recorded whole, and reads back byte-for-byte.
 
-    Measured on a real command (TASK-086): a heredoc carrying a whole ledger produced an
-    8 019-character field. The cap is 400 characters, with a flag so a reader knows the
-    command was truncated rather than genuinely short.
+    This test used to assert the opposite — a 400-character cap and a ``truncated`` flag
+    (TASK-086 ST-10, operator decision 2026-11-28). The cap was withdrawn because a field cut
+    at 400 characters answers "what was attempted" as badly as a missing one: the call line can
+    be seen, the point of it cannot.
+
+    The body is not part of the call, so it becomes a size; the argument list, which is the
+    call, is not shortened at all — that is the second half of this test.
     """
     command = "cat > src/service.py <<'EOF'\n" + ("line of text\n" * 500) + "EOF"
     gate.decide(ledger=project, tool="shell", args={"command": command})
     record = _denials(project)[0]
-    assert len(record["target"]) == 400, f"cap not applied: {len(record['target'])}"
-    assert record.get("truncated") is True
+    assert "truncated" not in record, "the truncation flag must be gone, not merely unused"
+    target = record["target"]
+    assert target.startswith("cat > src/service.py <<'EOF'\n"), target[:60]
+    assert "[body: 500 lines, 6500 bytes]" in target, target
+    assert target.endswith("\nEOF"), target[-40:]
+    # The summary replaces 500 lines with one, so the field is small *because* the body is a
+    # body — not because the call was cut.
+    assert "line of text" not in target
+
+
+def test_a_long_argument_list_is_not_shortened(gate, project: Path) -> None:
+    """Length that comes from arguments is length of the call, so nothing is dropped.
+
+    A heredoc body is a payload; an argument list is the invocation itself. The cap was
+    withdrawn to keep exactly this: after 8 000 characters of arguments, the tail — which is
+    usually where the interesting flag is — must still be readable.
+    """
+    arguments = " ".join(f"arg{number}" for number in range(1200))
+    command = f"python3 script.py {arguments} > src/service.py"
+    assert len(command) > 8000, f"the fixture is too short to prove the point: {len(command)}"
+    gate.decide(ledger=project, tool="shell", args={"command": command})
+    record = _denials(project)[0]
+    assert record["target"] == command, (
+        f"a call of {len(command)} characters was cut to {len(record['target'])}"
+    )
+    assert "truncated" not in record
+
+
+def test_a_quoted_shift_is_not_a_heredoc(gate, project: Path) -> None:
+    """`<<` inside quotes is text, so nothing after it becomes a body to summarise.
+
+    `grep "x << y" file` searches for a string; treating it as an opener would eat the rest of
+    the command looking for a terminator that does not exist. The same trap the gate already
+    documents for `>` (invariant 45a), in the place where the journal is written.
+    """
+    command = 'grep "a << b" > src/service.py\necho done'
+    gate.decide(ledger=project, tool="shell", args={"command": command})
+    assert _denials(project)[0]["target"] == command
+
+
+def test_an_unterminated_body_is_not_summarised(gate, project: Path) -> None:
+    """A heredoc with no terminator has no body; the rest of the command is kept verbatim.
+
+    Summarising it would silently drop whatever followed the `<<`, which is the failure this
+    sub-task exists to remove — a shorter field that no longer says what happened.
+    """
+    command = "cat > src/service.py <<'EOF'\nline one\nline two"
+    gate.decide(ledger=project, tool="shell", args={"command": command})
+    assert _denials(project)[0]["target"] == command
+
+
+def test_the_terminator_must_match_exactly(gate, project: Path) -> None:
+    """Indented text equal to the delimiter does not close a `<<` heredoc.
+
+    Only `<<-` strips leading tabs. Accepting `  EOF` as a terminator would end the body early
+    and hand the rest of the body into the record as if it were part of the call.
+    """
+    command = "cat > src/service.py <<'EOF'\n  EOF\nstill body\nEOF"
+    gate.decide(ledger=project, tool="shell", args={"command": command})
+    target = _denials(project)[0]["target"]
+    assert "[body: 2 lines, 17 bytes]" in target, target
+    assert "still body" not in target
 
 
 # --- secrets in the target ---------------------------------------------------
@@ -269,4 +340,25 @@ def test_a_record_without_the_new_fields_still_reads(journal, project: Path) -> 
     helpers.append(project, event="deny", tool="shell", why="phase 1 forbids this")
     events = journal.read_events(project)
     assert len(events) == 1
+    assert journal.state_of(project)["phase"] == 1
+
+
+def test_an_old_record_with_the_truncation_flag_still_reads(journal, project: Path) -> None:
+    """The removed field must be readable where it already sits, not only absent from new ones.
+
+    One record with ``truncated: true`` and a cut target exists on disk from TASK-087. Dropping
+    the field from the writer says nothing about a reader, so the reader is tested against the
+    old shape rather than assumed to cope with it.
+    """
+    helpers.append(
+        project,
+        event="deny",
+        tool="shell",
+        why="phase 1 forbids this",
+        target="cat > src/service.py <<'EOF'\\n",
+        truncated=True,
+    )
+    events = journal.read_events(project)
+    assert len(events) == 1
+    assert events[0]["truncated"] is True
     assert journal.state_of(project)["phase"] == 1

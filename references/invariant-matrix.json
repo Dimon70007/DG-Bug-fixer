@@ -782,6 +782,7 @@
         "inline_scripts_v3::test_a_wrapped_interpreter_is_refused_too",
         "inline_scripts_v3::test_a_wrapped_script_file_is_still_allowed",
         "skill::test_the_skill_does_not_demonstrate_the_shape_it_forbids",
+        "skill::test_the_skill_carries_no_debugging_record",
         "skill::test_the_skill_does_not_promise_what_the_gate_refuses"
       ]
     }

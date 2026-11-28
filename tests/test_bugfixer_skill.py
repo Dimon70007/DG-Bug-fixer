@@ -368,6 +368,42 @@ def test_the_skill_forbids_inline_scripts_and_says_what_to_do_instead() -> None:
     )
 
 
+def test_the_skill_carries_no_debugging_record() -> None:
+    """The skill is read by an agent that must act, not by a maintainer reading a post-mortem.
+
+    Operator's objection (2026-11-28 13:49): `SKILL.md` had accumulated the record of its own
+    debugging — task identifiers, measurement counts, "it used to be", and defences of the gate's
+    behaviour ("this is not a defect"). Those belong in the task file, which is where the run's
+    evidence lives. A skill that cites its own change history is also a skill that goes stale the
+    moment the next change lands, and nothing in the file says which sentences are normative.
+
+    The check is deliberately about *kinds of content*, not about exact phrases: the defect this
+    guards against grew back twice, each time in new wording.
+    """
+    text = _skill_text()
+    patterns = {
+        "task identifier": re.compile(r"\bTASK-\d{3}\b"),
+        "finding identifier": re.compile(r"\bF\d{2}\b"),
+        "measurement narrative": re.compile(r"(?<!\w)(?:Измерено|измерено)(?!\w)"),
+        # "раньше" alone is ordinary Russian ("caught it earlier"); the history marker is the
+        # past-state comparison. Measured: the first version of this guard flagged a report-field
+        # description that happens to contain the word.
+        "change history": re.compile(
+            r"\b(?:раньше было|прежде было|было \d+\s|теперь отказывается|раньше проходил)"
+        ),
+        "internal symbol": re.compile(r"\b_[a-z_]{3,}\b"),
+        "defence of the gate": re.compile(r"это не дефект|документированное поведение"),
+    }
+    found: list[str] = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        if line.startswith("#") or line.startswith("```"):
+            continue
+        for name, pattern in patterns.items():
+            if pattern.search(line):
+                found.append(f"{number} [{name}] {line.strip()[:90]}")
+    assert not found, "debugging record in SKILL.md:\n" + "\n".join(found)
+
+
 def test_the_skill_does_not_demonstrate_the_shape_it_forbids() -> None:
     """A command inside a fenced block is an instruction, not an illustration of a sin.
 
@@ -416,11 +452,16 @@ def test_the_skill_does_not_promise_what_the_gate_refuses() -> None:
         "configuration is not a phase-4 task: it belongs to initialisation"
     )
     assert "заблокированы" not in section, (
-        "the install window exists now; the skill must not still describe the blocked state"
+        "the install steps are executable now; the skill must not describe a blocked state"
     )
-    assert "окном установки" in section, (
-        "the skill must name the window that makes the steps executable"
+    assert "contract verified by: not yet" in section.lower(), (
+        "the skill must say where the steps are permitted — the contract's own state"
     )
+    # No maintainer content: the agent acts on rules and commands, it does not read a post-mortem.
+    for marker in ("TASK-0", "Измерено", "измерено на"):
+        assert marker not in section, (
+            f"maintainer content in the operator-facing section: {marker!r}"
+        )
 
 
 def test_a_probe_is_deleted_once_its_finding_has_a_test() -> None:

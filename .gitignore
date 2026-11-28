@@ -12,4 +12,9 @@ __pycache__/
 # are covered by tests. Not in git, so a clone carries no dead measurement code.
 probes/
 logs/
+
+# coverage.py state: a binary cache rewritten by every run, and a measured artifact, not source.
+# `.coverage.*` is the parallel-run variant; the bare `.coverage` was tracked by mistake and made
+# every test run dirty the tree.
+.coverage
 .coverage.*

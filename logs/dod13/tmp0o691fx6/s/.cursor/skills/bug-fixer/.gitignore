@@ -1,7 +1,0 @@
-__pycache__/
-*.py[cod]
-.pytest_cache/
-
-# Run journals (spec §5.4) are local history: append-only, per task, never in git.
-*.bugfixer.jsonl
-*.bugfixer.json

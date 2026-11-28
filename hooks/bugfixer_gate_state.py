@@ -474,8 +474,62 @@ def guard_hypothesis_ready(ledger_text: str, state: dict[str, Any]) -> Refusal |
     return None
 
 
+def _skipped_without_goal(ledger_text: str) -> str:
+    """Refuse ``SKIPPED`` that stands in for an unfinished probe (§5.1).
+
+    A skipped hypothesis is legitimate only when another one reached ``CONFIRMED`` and the
+    defect is closed — then a further probe is work without a target. Without that, ``SKIPPED``
+    means "declined to check", and accepting it would turn the queue into a formality: eleven
+    hypotheses, none probed, all marked skipped, run declared ``DONE``.
+
+    Reading the last probe is not enough here: ``PROVEN`` already requires it to be
+    ``CONFIRMED``, so that check would always pass. What matters is whether **any** hypothesis
+    other than the skipped ones was confirmed, and the skip lines themselves.
+
+    Args:
+        ledger_text: Full ledger contents.
+
+    Returns:
+        A refusal naming the first problem, or an empty string when every skip is justified.
+    """
+    parsed = ledger_readers.parse_hypotheses(ledger_text).values()
+    skipped = [hypothesis for hypothesis in parsed if hypothesis.status == "SKIPPED"]
+    if not skipped:
+        return ""
+    confirmed = [
+        hypothesis.id
+        for hypothesis in ledger_readers.parse_hypotheses(ledger_text).values()
+        if hypothesis.status == "CONFIRMED"
+    ]
+    if not confirmed:
+        return (
+            f"{', '.join(hypothesis.id for hypothesis in skipped)} marked `SKIPPED`, but no "
+            "hypothesis reached `CONFIRMED`. A skip is allowed only when the goal is already "
+            "met by another hypothesis; without one it means the probe was declined, not that "
+            "it was unnecessary. Probe the highest-ranked hypothesis, or record `REFUTED` if "
+            "it is wrong."
+        )
+    reasonless = [
+        hypothesis.id
+        for hypothesis in skipped
+        if not hypothesis.records[-1].reason.strip()
+    ]
+    if reasonless:
+        return (
+            f"{', '.join(reasonless)} marked `SKIPPED` without a reason. Write "
+            "`- F<n> → SKIPPED — <what made it unnecessary>`; an unexplained skip reads as "
+            "an omission, and the next session cannot tell the two apart."
+        )
+    return ""
+
+
 def guard_proven(ledger_text: str, state: dict[str, Any]) -> Refusal | None:
     """``PROVEN`` 4→5: the verdict is backed by evidence mirrored per verdict type.
+
+    The queue is deliberately not checked here: a ``CONFIRMED`` hypothesis closes the defect,
+    and probing the rest afterwards is work without a target (§5.1). What **is** checked is
+    that a skipped hypothesis was not a way of avoiding work: ``SKIPPED`` is allowed only when
+    some hypothesis reached ``CONFIRMED``, which in this edge is the probe's own scope.
 
     Args:
         ledger_text: Full ledger contents.
@@ -496,6 +550,9 @@ def guard_proven(ledger_text: str, state: dict[str, Any]) -> Refusal | None:
             "cannot enter Phase 5: the last probe has no CONFIRMED verdict. Phase 5 only "
             "checks that something worked."
         )
+    skipped_problem = _skipped_without_goal(ledger_text)
+    if skipped_problem:
+        return Refusal(skipped_problem)
     probe = last_probe(ledger_text)
     assert probe is not None
     if count_markers(_ATTEMPT_RE, probe.body) == 0:

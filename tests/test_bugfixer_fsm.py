@@ -528,6 +528,87 @@ def test_proven_succeeds_with_every_proof(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
+def _skipped(text: str, reason: str, hid: str = "H2") -> str:
+    """Mark one hypothesis ``SKIPPED`` in a rendered ledger.
+
+    The anchor is taken from what the fixture renders, not from how the source looks: the first
+    version of these tests replaced a string that never occurred, `.replace` returned the text
+    unchanged, and the case silently became its own control (`probes/st13_fixture_layout.py`).
+    The assertion below is what makes the helper honest.
+
+    Args:
+        text: Rendered ledger.
+        reason: Text after the verdict; an empty string writes a reasonless skip.
+        hid: Hypothesis to mark.
+
+    Returns:
+        The ledger with the record appended.
+
+    Raises:
+        AssertionError: When the hypothesis has no ``#### Records`` list to extend.
+    """
+    heading = f"### {hid} — утверждение {hid}"
+    assert heading in text, f"the fixture does not render {hid}; the case would prove nothing"
+    start = text.index(heading)
+    marker = "#### Records\n"
+    at = text.index(marker, start) + len(marker)
+    # APPENDED, not prepended: a hypothesis's status is its LAST record (§5.1), so a skip
+    # inserted at the top leaves the earlier verdict in force and the case proves nothing.
+    end = at
+    for line in text[at:].splitlines(keepends=True):
+        if not line.lstrip().startswith("- "):
+            break
+        end += len(line)
+    line = f"- F6 → SKIPPED — {reason}\n" if reason else "- F6 → SKIPPED\n"
+    edited = text[:end] + line + text[end:]
+    assert edited != text, "the skip line was not inserted"
+    return edited
+
+
+def test_a_skipped_hypothesis_does_not_block_proven(tmp_path: Path) -> None:
+    """The goal is met, so an unprobed hypothesis must not hold the run in Phase 4.
+
+    Before this rule the queue had no way to retire a hypothesis that became pointless: it
+    stayed `PROPOSED`, and the next session read a finished task as unfinished (§5.1).
+    """
+    text = _skipped(
+        _phase_4_probe("CONFIRMED", CONFIRMED_FACTS, extra_h2=True),
+        "H1 confirmed the cause",
+    )
+    ledger = _write(tmp_path / "T.md", text, 4)
+    result = _run(str(ledger), "advance", "5", "--evidence", "cause proven")
+    assert result.returncode == 0, result.stderr
+
+
+def test_skipped_without_a_reason_is_refused(tmp_path: Path) -> None:
+    """`SKIPPED` alone reads as "forgot", and no reader can tell the two apart."""
+    text = _skipped(_phase_4_probe("CONFIRMED", CONFIRMED_FACTS, extra_h2=True), "")
+    ledger = _write(tmp_path / "T.md", text, 4)
+    result = _run(str(ledger), "advance", "5", "--evidence", "x")
+    assert result.returncode == 2
+    assert "without a reason" in result.stderr
+    assert "H2" in result.stderr
+
+
+def test_skipped_where_nothing_is_confirmed_is_refused(tmp_path: Path) -> None:
+    """The bypass this rule must not open: skip everything, call it done.
+
+    `PROVEN` requires a CONFIRMED last probe, so the interesting case is a skip that pretends
+    the goal was reached — with the confirming hypothesis absent from the ledger entirely.
+    """
+    module = _load("bugfixer_gate_state_skipped", _STATE)
+    text = (
+        BASELINE
+        + ROUTE
+        + _hypothesis("H0", 1, [("F2", "PROPOSED"), ("F3", "SKIPPED")])
+        + _probe("F3", "H0", "REFUTED", REFUTED_FACTS + "Attempt 1 consumed\n")
+        + "Working on: H0\n"
+    )
+    problem = module._skipped_without_goal(text)
+    assert problem, "a skip with no CONFIRMED hypothesis must be refused"
+    assert "no hypothesis reached" in problem
+
+
 @pytest.mark.parametrize(
     ("marker", "expected"),
     [

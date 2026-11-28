@@ -110,7 +110,7 @@ _TABLE_ROW_RE: Final[re.Pattern[str]] = re.compile(r"^\|\s*([^|]+?)\s*\|\s*(.*?)
 
 #: A ``#### Records`` bullet: ``- F3 → REFUTED``.
 _RECORD_LINK_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[ \t]*[-*][ \t]+(F\d+)[ \t]*→[ \t]*([A-Z][A-Z ]*)", re.MULTILINE
+    r"^[ \t]*[-*][ \t]+(F\d+)[ \t]*→[ \t]*([A-Z][A-Z ]*)[ \t]*(?:—[ \t]*(.*))?$", re.MULTILINE
 )
 
 #: Table-form attempt, e.g. ``| Attempt | 3 consumed |`` — a format error, not a marker.
@@ -760,10 +760,13 @@ class RecordLink:
     Attributes:
         id: Record that produced the verdict, e.g. ``"F3"``.
         verdict: Verdict keyword as written, e.g. ``"REFUTED"``.
+        reason: Text after the verdict, as written. Only ``SKIPPED`` requires it — an
+            unexplained skip is indistinguishable from a forgotten one (§5.1).
     """
 
     id: str
     verdict: str
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -1334,8 +1337,8 @@ def _record_links(block: str) -> list[RecordLink]:
         Links in file order, which is the order the verdicts happened in.
     """
     return [
-        RecordLink(id=record_id, verdict=verdict.strip())
-        for record_id, verdict in _RECORD_LINK_RE.findall(_records_section(block))
+        RecordLink(id=record_id, verdict=verdict.strip(), reason=reason.strip())
+        for record_id, verdict, reason in _RECORD_LINK_RE.findall(_records_section(block))
     ]
 
 
@@ -1349,11 +1352,16 @@ def derive_status(hypothesis: Hypothesis) -> str:
     a partial hit is deepened by the same hypothesis, not retired, so it stays in
     the queue.
 
+    ``SKIPPED`` leaves the queue although nothing was probed: another hypothesis reached
+    ``CONFIRMED`` and the goal is met, so a further probe would be work without a target
+    (§5.1, TASK-086 ST-13). It is written as a record, so the fact that the hypothesis was
+    never checked stays visible in the file.
+
     Args:
         hypothesis: Parsed hypothesis.
 
     Returns:
-        ``PROPOSED``, ``CONFIRMED``, or ``REFUTED``.
+        ``PROPOSED``, ``CONFIRMED``, ``REFUTED``, or ``SKIPPED``.
     """
     if not hypothesis.records:
         return "PROPOSED"
@@ -1362,6 +1370,8 @@ def derive_status(hypothesis: Hypothesis) -> str:
         return "CONFIRMED"
     if verdict.startswith("REFUTED"):
         return "REFUTED"
+    if verdict.startswith("SKIPPED"):
+        return "SKIPPED"
     return "PROPOSED"
 
 

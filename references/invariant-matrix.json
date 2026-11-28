@@ -369,7 +369,10 @@
         "fsm::test_next_in_queue_refuses_a_partial_verdict",
         "fsm::test_queue_exhausted_refuses_when_a_hypothesis_is_waiting",
         "fsm::test_queue_exhausted_needs_new_information",
-        "fsm::test_queue_exhausted_succeeds_with_an_empty_queue_and_new_information"
+        "fsm::test_queue_exhausted_succeeds_with_an_empty_queue_and_new_information",
+        "fsm::test_a_skipped_hypothesis_does_not_block_proven",
+        "fsm::test_skipped_without_a_reason_is_refused",
+        "fsm::test_skipped_where_nothing_is_confirmed_is_refused"
       ]
     },
     "27b": {

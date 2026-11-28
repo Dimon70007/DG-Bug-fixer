@@ -298,9 +298,16 @@
       ]
     },
     "26": {
-      "text": "Запись `F<n>` с секретом по любому из восьми паттернов §10 → `deny`, отказ называет сработавшее выражение. **Длина, хэш, размер и префикс секрета — тоже `deny`**: они позволяют подобрать или проверить значение офлайн. Факт настройки (`api_key: configured`, `password_present=true`) не отказывает и не предупреждает — это единственное, что о секрете разрешено сообщать",
+      "text": "Запись `F<n>` с секретом по любому из восьми паттернов §10 → `deny`, отказ называет сработавшее выражение. **Длина, хэш, размер и префикс секрета — тоже `deny`**: они позволяют подобрать или проверить значение офлайн. Факт настройки (`api_key: configured`, `password_present=true`) не отказывает и не предупреждает — это единственное, что о секрете разрешено сообщать. Запись проверяется **где бы она ни лежала**: файл задачи и его подзадачи `tasks/TASK-<n>/**/*.md` (§5.3a); отказ называет имя файла",
       "tests": [
         "cli_v3::test_secrets_scans_a_file_and_the_diff",
+        "subtask_scan_v3::test_a_secret_in_the_ledger_is_refused",
+        "subtask_scan_v3::test_a_secret_in_a_subtask_file_is_refused",
+        "subtask_scan_v3::test_the_refusal_names_the_file_the_record_is_in",
+        "subtask_scan_v3::test_a_clean_subtask_directory_is_not_refused",
+        "subtask_scan_v3::test_a_directory_that_does_not_exist_is_not_an_error",
+        "subtask_scan_v3::test_nested_subdirectories_are_scanned",
+        "subtask_scan_v3::test_the_directory_name_is_the_task_number_only",
         "init_and_required_contract::test_init_never_copies_mcp_secrets_into_the_contract",
         "limits_v3::test_each_refusal_pattern_fires",
         "limits_v3::test_a_fact_of_setup_is_allowed",

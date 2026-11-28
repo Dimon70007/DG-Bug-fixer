@@ -1451,6 +1451,91 @@ def scan_records(text: str) -> list[str]:
     return problems
 
 
+#: How deep the sub-task scan descends. A sub-task lives at `tasks/TASK-<n>/ST-<k>.md`; one more
+#: level covers a sub-task that grew its own folder. Bounded rather than unbounded: a runaway
+#: tree under `tasks/` should not turn one hook call into a crawl of the project.
+_SUBTASK_SCAN_DEPTH: Final[int] = 2
+
+
+def subtask_directory(ledger: Path) -> Path:
+    """The directory a ledger's sub-tasks live in (spec §5.3a).
+
+    The name is the task number only — `tasks/TASK-086/` for `tasks/TASK-086-…md`, not the whole
+    file stem. Using the stem looked right and was wrong: the real directory was `TASK-086`, so
+    the scan found nothing and reported a clean task while three sub-task files sat unread.
+
+    Args:
+        ledger: Ledger file.
+
+    Returns:
+        Path of the sub-task directory; it may not exist.
+    """
+    match = re.match(r"(TASK-\d+)", ledger.stem)
+    name = match.group(1) if match else ledger.stem
+    return ledger.parent / name
+
+
+def subtask_files(ledger: Path) -> list[Path]:
+    """Markdown files in the ledger's own sub-task directory, if it exists.
+
+    Spec §5.3a puts sub-tasks at ``tasks/TASK-<n>/ST-<k>.md`` — a directory named after the task
+    number, which the contract's ``tasks/TASK-*.md`` glob does not match (that is why the
+    directory is used at all). Records may live there, so the secret scan must follow them.
+
+    Args:
+        ledger: Ledger file.
+
+    Returns:
+        Markdown files under the sub-task directory, sorted, empty when it is absent.
+    """
+    folder = subtask_directory(ledger)
+    if not folder.is_dir():
+        return []
+    found: list[Path] = []
+    for path in sorted(folder.rglob("*.md")):
+        relative = path.relative_to(folder)
+        if len(relative.parts) > _SUBTASK_SCAN_DEPTH:
+            continue
+        if path.is_file():
+            found.append(path)
+    return found
+
+
+def secret_problems(ledger: Path, text: str) -> list[str]:
+    """Every secret the run would be refused for, across the ledger and its sub-task files.
+
+    Invariant 26 covers a record wherever it is written. Splitting a task into sub-files moved
+    records out of the ledger's text, and a scan of that text alone silently stopped covering
+    them: measured, the same poisoned record gave one finding inside the ledger and zero after
+    being moved (TASK-086, probe `check_records_scan_scope.py`).
+
+    Args:
+        ledger: Ledger file.
+        text: Ledger contents, already read by the caller.
+
+    Returns:
+        Refusal messages in file order: the ledger first, then each sub-task file.
+    """
+    problems = scan_records(text)
+    for path in subtask_files(ledger):
+        try:
+            body = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            # An unreadable sub-file cannot be shown to be clean; say so rather than skip it.
+            problems.append(
+                f"cannot read the sub-task file {path.name} to check it for secrets ({path}). "
+                "Fix its permissions or remove it from the task folder."
+            )
+            continue
+        for finding in secrets.scan(body):
+            problems.append(
+                f"secret in {path.name} at {secrets.describe(finding)}. Remove it: report only "
+                "whether the secret is configured (`api_key: configured`). Its value, length, "
+                "hash and prefix all help to recover it and are refused too (§10)."
+            )
+    return problems
+
+
 def run_state(ledger: Path) -> dict[str, Any]:
     """Derive the run state from the journal.
 
@@ -1981,7 +2066,7 @@ def _decide(
     # hook runs on every tool call and parsing the whole ledger each time would
     # slow each write for a rule that only matters when the phase changes.
 
-    for problem in scan_records(text):
+    for problem in secret_problems(ledger, text):
         return _deny(problem, verdict_of="secret-in-record")
 
     drift = task_drift(ledger, text)

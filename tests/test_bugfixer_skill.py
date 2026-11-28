@@ -399,23 +399,27 @@ def test_the_skill_does_not_demonstrate_the_shape_it_forbids() -> None:
 
 
 def test_the_skill_does_not_promise_what_the_gate_refuses() -> None:
-    """The linter steps belong to initialisation, and the skill must not claim otherwise.
+    """The linter steps belong to initialisation, and the skill must say so — and they must work.
 
-    Measured (TASK-086 ST-11): while `Contract verified by:` is `not yet`, invariant 37 opens
-    only the contract and the plugin tree, so `Write ruff.toml` and `poetry add ruff` are
-    refused. A skill that says "configure it in phase 4" would be describing a phase where the
-    gate disagrees — the same class of defect as an example that teaches a forbidden shape.
+    Measured history (TASK-086 ST-11): the first version of this rule put the linter setup in
+    phase 4, which is a probe. The operator corrected it: initialisation is the place. Then the
+    gate refused those steps during initialisation (invariant 37), so the text said "blocked
+    today" — true at the time, and no longer true once the install window opened. A skill that
+    describes either of those stale states is a skill that lies about the gate.
     """
     text = _skill_text()
     section = text.split("**Инлайн-скрипты запрещены", 1)[1].split("**Зонд живёт", 1)[0]
-    assert "Phase 0a" in section, (
+    assert "инициализации" in section, (
         "the linter steps must be placed at initialisation, not at a probe"
     )
     assert "только фаза 4" not in section, (
         "configuration is not a phase-4 task: it belongs to initialisation"
     )
-    assert "заблокированы" in section, (
-        "the skill must say the install steps are blocked today, not imply they work"
+    assert "заблокированы" not in section, (
+        "the install window exists now; the skill must not still describe the blocked state"
+    )
+    assert "окном установки" in section, (
+        "the skill must name the window that makes the steps executable"
     )
 
 

@@ -394,6 +394,68 @@ _WRAPPER_RUNNERS: Final[str] = (
     r"(?:sudo|env|poetry\s+run|uv\s+run|time|nice|nohup|exec|command|xargs)\s+"
 )
 
+#: Shell commands that install, configure or run the linter, matched as whole forms.
+#:
+#: The window exists so the linter can be installed during Phase 0a (invariant 51, §5.6), and it
+#: lists what is **allowed** rather than what is refused: `poetry run` is 457 of the 472 package
+#: manager segments in this repository's transcripts, and a "block package managers" rule would
+#: break the main way a script is started. The package name is pinned to the linter, which is what
+#: keeps `poetry add requests` out — measured: the gate cannot tell the two apart by write
+#: classification (TASK-086 F29), so a shape is the only thing that can.
+_LINTER_WINDOW_RE: Final[tuple[re.Pattern[str], ...]] = (
+    re.compile(r"^poetry add (?:--group dev |--group=dev |--dev )?(?:ruff|shellcheck-py)$"),
+    re.compile(r"^(?:python[0-9.]* -m )?pip[0-9.]* install (?:--user )?(?:ruff|shellcheck-py)$"),
+    re.compile(r"^(?:python[0-9.]* -m )?ruff --version$"),
+    re.compile(r"^ruff check [^\s;&|]+$"),
+    re.compile(r"^shellcheck --version$"),
+    re.compile(r"^shellcheck [^\s;&|]+$"),
+)
+
+#: Files whose content is the linter's configuration. `pyproject.toml` counts only when the write
+#: carries a `[tool.ruff]` table — otherwise it is an ordinary configuration edit.
+_LINTER_CONFIG_FILES: Final[frozenset[str]] = frozenset({"ruff.toml", ".ruff.toml"})
+
+def _is_linter_window(tool: str, args: dict[str, Any]) -> bool:
+    """Whether this call is the linter setup the init phase is allowed to perform (§5.6).
+
+    Two kinds, both narrow:
+
+    * a **command** that installs, configures or runs the linter, matched as a whole form —
+      `poetry add --group dev ruff` yes, `poetry add requests` no;
+    * a **write** of the linter's configuration — `ruff.toml`, or a `pyproject.toml` whose new
+      content carries a `[tool.ruff]` table.
+
+    The window is deliberately a list of allowed forms and not a general "during setup" pass:
+    opening the second would be the silent gate under another name, and `poetry run` (457 of the
+    472 package-manager segments measured here) would break with it.
+
+    Args:
+        tool: Lowercased tool name.
+        args: Tool arguments.
+
+    Returns:
+        ``True`` when the call is part of linter setup.
+    """
+    if tool in _SHELL_TOOLS:
+        command = _shell_command(args).strip()
+        if not command or "\n" in command:
+            # A multi-line command is not one of these forms; refusing to parse it keeps the
+            # window from covering `ruff --version\nrm -rf src`.
+            return False
+        return any(pattern.match(command) for pattern in _LINTER_WINDOW_RE)
+
+    path = _target_path(args)
+    if not path:
+        return False
+    name = Path(path).name
+    if name in _LINTER_CONFIG_FILES:
+        return True
+    if name == "pyproject.toml":
+        content = args.get("content") or args.get("new_string") or args.get("newStr") or ""
+        return isinstance(content, str) and "[tool.ruff" in content
+    return False
+
+
 def _is_inline_script(command: str) -> bool:
     """Whether the command carries its program in the command line (§5.6, invariant 51).
 
@@ -3285,6 +3347,11 @@ def main(argv: list[str] | None = None) -> int:
         if _unblocks_setup(tool, tool_args, _project_root(event)):
             _emit(Verdict(allow=True))
             return EXIT_ALLOW
+        # §5.6: the linter is installed and configured during initialisation, so these forms are
+        # open while the contract is still `not yet`. Narrow on purpose — see `_is_linter_window`.
+        if _is_linter_window(tool, tool_args):
+            _emit(Verdict(allow=True))
+            return EXIT_ALLOW
         _fail_closed(str(exc))
     if args.ledger and ledger is None:
         # The adapter names a ledger explicitly, so a missing one is a broken
@@ -3301,6 +3368,9 @@ def main(argv: list[str] | None = None) -> int:
     contract_problems = _contract_placeholders(_project_root(event))
     if contract_problems:
         if _unblocks_setup(tool, tool_args, _project_root(event)):
+            _emit(Verdict(allow=True))
+            return EXIT_ALLOW
+        if _is_linter_window(tool, tool_args):
             _emit(Verdict(allow=True))
             return EXIT_ALLOW
         # The message already ends with what to do; appending a generic "fill it in" would fit

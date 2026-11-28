@@ -420,7 +420,16 @@
         "gate::test_appending_to_the_task_file_from_a_shell_is_allowed",
         "gate::test_a_shell_write_that_also_touches_code_is_still_denied",
         "gate::test_a_same_named_file_elsewhere_is_not_the_ledger",
-        "skill::test_ledger_forbids_a_second_file"
+        "skill::test_ledger_forbids_a_second_file",
+        "language_v3::test_the_language_rule_exists",
+        "language_v3::test_every_russian_marker_in_the_code_is_listed",
+        "language_v3::test_the_listed_markers_are_really_russian_in_the_code",
+        "language_v3::test_the_results_table_columns_are_checked_in_russian",
+        "language_v3::test_an_english_marker_is_not_accepted_and_the_refusal_names_the_russian",
+        "language_v3::test_every_russian_marker_is_in_the_twin_table",
+        "language_v3::test_the_skill_states_the_rule_unconditionally",
+        "language_v3::test_the_chat_rule_is_not_pinned_to_one_language",
+        "language_v3::test_the_description_is_findable_in_english_and_in_russian"
       ]
     },
     "32": {

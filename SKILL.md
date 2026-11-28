@@ -1,10 +1,14 @@
 ---
 name: bug-fixer
 description: >
-  Систематическое исправление багов через пятифазный цикл: воспроизведение ->
-  маршрутизация -> исследование -> проба гипотез по очереди -> решение. Используй
-  скилл при падающих тестах, ошибках, неожиданном поведении или регрессии. Правка
-  production-кода разрешена только как проба названной гипотезы и только в фазе 4.
+  Systematic bug fixing through a five-phase cycle: reproduce -> route -> research -> probe
+  hypotheses in queue order -> decide. Use when tests fail, an error appears, behaviour is
+  unexpected, or a regression shows up. Production code may be edited only as a probe of a named
+  hypothesis, and only in phase 4.
+  Russian: систематическое исправление багов через пятифазный цикл: воспроизведение -> маршрутизация
+  -> исследование -> проба гипотез по очереди -> решение. Используй при падающих тестах, ошибках,
+  неожиданном поведении или регрессии; правка production-кода разрешена только в фазе 4 и только
+  как проба названной гипотезы.
 metadata:
   version: "3.1.0"
   category: debugging
@@ -505,6 +509,59 @@ git checkout -- <только эти файлы>
 
 Проверить, как это видит плагин: `bugfixer state <ledger> subtasks` — тот же ответ, что у гейта.
 
+
+## Language: task files in English, chat in the operator's language
+
+Everything written into the task file — `## Findings`, `## Report`, `## Remaining`, `### H<n>`,
+`### F<n>`, sub-task files — is written **in English**, whatever language the request came in.
+Reason: the task file is read by the agent on every step, and English is the cheapest of the
+plausible choices under `cl100k_base` — a Cyrillic sentence costs about twice the tokens of the
+same meaning in English, and non-Latin scripts generally tokenise worse than ASCII.
+
+**The chat follows the operator.** Reports, questions and explanations are written in the language
+the operator writes in: a Russian question gets a Russian answer, an English one gets English. This
+is not politeness — a plugin that answers only one language is a plugin for one locale, and it
+cannot be installed anywhere else without an edit.
+
+**What else is fixed, and why:**
+
+| What | Why |
+|---|---|
+| `## Task` — the original statement | those are the operator's words; a translation changes the task fingerprint (invariant 9) and replaces the requirement |
+| Eight markers the gate matches **literally** | translating one makes the ledger unreadable for the code (table below) |
+
+**Markers must not be translated.** The gate compares them as literals, so
+`ФАКТ (RED): pytest -> 1 failed` stays exactly as written even when everything around it is English:
+
+| Marker | Read by |
+|---|---|
+| `ФАКТ (RED):` | the edge into phase 5 — target tests failed before the change |
+| `ФАКТ (GREEN):` | the edge into phase 5, and the changelog check — full suite green |
+| `ФАКТ (логи):` | the edge into phase 5, and the queue edge — mechanism shown in the logs |
+| `ФАКТ (дельта):` | the deepen edge — three numbers for a partial hit |
+| `ФАКТ (регрессия):` | the changelog check — the baseline broke after a green run |
+| `Логи:` | the `BLOCKED` report field |
+| `Причина:` | the `BLOCKED` report field — a closed list of reasons |
+| results-table header: `До`, `После`, `Порог`, `Вывод` | the results table that phase 5 requires |
+
+**Write a marker only from this list, and only in this spelling.** The rule is unconditional: even
+when all the surrounding text is English, the marker stays exactly as the code reads it. An English
+twin (`FACT (RED):`, `Logs:`, `Reason:`) is not a marker — it looks like proof, the gate does not see
+it, and the transition refuses.
+
+The refusal **names the correct marker**, and that is pinned by a test rather than left to luck, so
+a wrong spelling costs one turn instead of a wrong conclusion. This is the one place where mixing
+languages is safe: the gate does not guess an intention, it compares a literal and says what to
+write.
+
+The other markers are already English and therefore offer no choice: `Bug: stable`, `Bug: flaky`,
+`Attempt <k> consumed`, `Recheck H<n> #<k>`, `Working on: H<n>`, `Merge:`, `Revert:`,
+`NEW INFORMATION:`, `Secrets scan:`, `Corner cases: none — <why>`, `Counter reset:`,
+`Resolution:`.
+
+**Changing a marker's language is its own change**, not part of a translation: the regex, the
+norm, this file, the templates and the tests move together, or the gate stops seeing proofs and
+the refusal names a marker that is visibly present in the file.
 
 ## Активная гипотеза
 

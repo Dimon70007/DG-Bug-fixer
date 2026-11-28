@@ -28,7 +28,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Callable, Final, Sequence
 
 EXIT_CLEAN: Final[int] = 0
 EXIT_SECRET: Final[int] = 2
@@ -120,20 +120,35 @@ SETUP_NAME_PARTS: Final[tuple[str, ...]] = (
 
 _REDACT_HEAD: Final[int] = 4
 
+#: A redaction already written into a field. It has to be recognised: the placeholder itself
+#: reads like an assignment to the `assignment` pattern (`Authorization: <redacted:`), so a
+#: second masking pass would eat the rule name and leave a field that names a different rule
+#: than the one that fired.
+REDACTION_RE: Final[re.Pattern[str]] = re.compile(r"<redacted: [a-z0-9-]+>")
+
 
 @dataclass(frozen=True)
 class Finding:
     """One match.
 
+    ``start`` and ``end`` are the match's offsets inside its line, so a caller can replace
+    exactly the value and keep everything around it (TASK-086 ST-12). They are positions in a
+    command line, not a property of the secret: an offset says nothing about the value that a
+    length or a prefix would not.
+
     Attributes:
         line_no: 1-based line number.
         rule: Pattern name, so a refusal says which rule fired.
         excerpt: The line with the value masked.
+        start: Offset of the match's first character in its line.
+        end: Offset one past its last character.
     """
 
     line_no: int
     rule: str
     excerpt: str
+    start: int = 0
+    end: int = 0
 
 
 def _mask_value(text: str) -> str:
@@ -192,29 +207,130 @@ def _is_setup_report(matched: str) -> bool:
     return any(part in lowered for part in SETUP_NAME_PARTS)
 
 
+def _findings_in(line: str) -> list[Finding]:
+    """Every secret match on one line, not only the first.
+
+    Two callers need different answers from the same scan:
+
+    * a refusal needs the first rule that fired — naming one is enough;
+    * masking needs **all** of them, because a field that keeps the command must not keep a
+      credential. Measured: with one match per line, a `ghp_…` token survived beside a masked
+      `sk-…` on the same command line (`probes/st12_target_masking.py`).
+
+    Overlapping matches are dropped, keeping the leftmost-longest rule order: a `Bearer …` header
+    already matched by the concrete pattern must not be matched again by the generic one.
+
+    Args:
+        line: One line of text.
+
+    Returns:
+        Findings in match order, without overlaps.
+    """
+    spans = [(match.start(), match.end()) for match in REDACTION_RE.finditer(line)]
+    found: list[Finding] = []
+    for name, pattern in SECRET_PATTERNS:
+        for match in re.finditer(pattern, line):
+            if _overlaps(match, spans):
+                continue
+            if name in {"assignment", "derived"} and _is_setup_report(match.group(0)):
+                continue
+            spans.append((match.start(), match.end()))
+            found.append(Finding(1, name, line, match.start(), match.end()))
+    return sorted(found, key=lambda finding: finding.start)
+
+
 def scan(text: str) -> list[Finding]:
     """Scan text for secret patterns.
 
     Every pattern refuses — there is no advisory level (§10, 2026-11-27). A match is skipped only
     when the assignment turns out to report setup, which is the one statement §10 requires.
 
+    Two other things are skipped, both because a field may already carry them:
+
+    * an existing ``<redacted: rule>`` — the placeholder reads as an assignment to the generic
+      pattern, so a second pass would mask the rule name and name the wrong rule;
+    * an ordinary path matched by the `base64` rule — done by the caller, which knows the target.
+
+    Each finding carries the offsets of its match, so a caller that has to record the line can
+    replace the value and keep the rest of it (TASK-086 ST-12).
+
     Args:
         text: Content to scan.
 
     Returns:
-        Findings in file order.
+        Findings in file order, one per line: the first rule that fired. Masking uses
+        :func:`mask`, which takes every match on the line.
     """
     findings: list[Finding] = []
     for index, line in enumerate(text.splitlines(), start=1):
-        for name, pattern in SECRET_PATTERNS:
-            match = re.search(pattern, line)
-            if match is None:
-                continue
-            if name in {"assignment", "derived"} and _is_setup_report(match.group(0)):
-                continue
-            findings.append(Finding(index, name, _mask_value(line)))
-            break
+        on_line = _findings_in(line)
+        if not on_line:
+            continue
+        first = on_line[0]
+        findings.append(
+            Finding(index, first.rule, _mask_value(line), first.start, first.end)
+        )
     return findings
+
+
+def _overlaps(match: re.Match[str], spans: Sequence[tuple[int, int]]) -> bool:
+    """Whether a candidate match touches an existing ``<redacted: rule>``.
+
+    This is what keeps a second masking pass from renaming the first rule: one pass leaves
+    ``Authorization: <redacted: bearer>``, the generic `assignment` pattern reads the placeholder
+    as its value, and masking it again would say `<redacted: assignment>` — a rule that never
+    fired, the exact mislabelling TASK-086 ST-12 removes. The check is overlap, not "starts
+    inside", because the match begins at the name and runs into the placeholder.
+
+    Args:
+        match: Candidate match.
+        spans: Offsets of the placeholders already on the line.
+
+    Returns:
+        ``True`` when the two share any character.
+    """
+    return any(match.start() < end and start < match.end() for start, end in spans)
+
+
+def mask(
+    text: str, *, keep: Callable[[Finding, str], bool] | None = None
+) -> str:
+    """Replace each secret match with its rule name, keeping the rest of the text.
+
+    §10 forbids the **value**; it never asked for the line around it. A journal field that keeps
+    the command and drops one argument still answers "what was attempted", while a field replaced
+    whole answers nothing (TASK-086 ST-12, measured: a four-argument command recorded as
+    ``<redacted: assignment>``).
+
+    Only the matched span goes, so what a reader loses is exactly what the rule objected to, and
+    the scan covers **every** match rather than the first one on each line: masking one per line
+    left a second credential in clear (`probes/st12_target_masking.py`, case
+    `two-secrets-one-line`).
+
+    Args:
+        text: The text to mask.
+        keep: Called as ``keep(finding, text)`` for each match; ``True`` means "record as is" —
+            the caller's exemption for an ordinary path matched by the `base64` rule, which only
+            the caller can judge.
+
+    Returns:
+        The text with every match replaced by ``<redacted: rule>``, except those ``keep`` allows.
+    """
+    lines = text.splitlines(keepends=True)
+    by_line: dict[int, list[Finding]] = {}
+    for index, line in enumerate(lines, start=1):
+        for finding in _findings_in(line.rstrip("\r\n")):
+            if keep is not None and keep(finding, line.rstrip("\r\n")):
+                continue
+            by_line.setdefault(index, []).append(finding)
+    for line_no, group in by_line.items():
+        index = line_no - 1
+        line = lines[index]
+        # Right to left: an earlier replacement must not shift a later offset.
+        for finding in sorted(group, key=lambda item: item.start, reverse=True):
+            line = f"{line[: finding.start]}<redacted: {finding.rule}>{line[finding.end :]}"
+        lines[index] = line
+    return "".join(lines)
 
 
 def describe(finding: Finding) -> str:

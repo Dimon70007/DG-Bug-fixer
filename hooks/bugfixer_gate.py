@@ -2046,7 +2046,7 @@ def _test_paths(ledger: Path) -> list[str]:
 # --- decision ----------------------------------------------------------------
 
 
-def _is_path_finding(finding: secrets.Finding) -> bool:
+def _is_path_finding(finding: secrets.Finding, line: str) -> bool:
     """Whether a `base64` finding is really a filesystem path.
 
     The `base64` rule is ``[A-Za-z0-9+/]{40,}={0,2}``. `/` is in its alphabet, so every path
@@ -2060,24 +2060,25 @@ def _is_path_finding(finding: secrets.Finding) -> bool:
     Only the `base64` rule is subject to this: a token prefix (`ghp_`, `sk-`, `AKIA`) or an
     assignment is a credential wherever it appears.
 
+    The run is taken by offset from ``line``, not re-found inside ``excerpt``: the excerpt is
+    the masked line, so a line holding two matches would answer for the wrong one.
+
     Args:
-        finding: One scanner finding.
+        finding: One scanner finding of ``line``.
+        line: The line the finding came from.
 
     Returns:
         ``True`` when the finding is a path and may be recorded as-is.
     """
     if finding.rule != "base64":
         return False
-    text = finding.excerpt
-    # `excerpt` is the masked line; the matched run is what matters, so re-find it.
-    match = re.search(r"[A-Za-z0-9+/]{40,}={0,2}", text)
-    if match is None:
-        return False
-    run = match.group(0)
+    run = line[finding.start : finding.end]
     if "/" not in run:
         return False
     # A path has no `=` except possibly inside a filename; base64 padding is only at the end.
     return "=" not in run.rstrip("=")
+
+
 
 
 def _journal_target(tool: str, args: dict[str, Any]) -> str:
@@ -2094,9 +2095,11 @@ def _journal_target(tool: str, args: dict[str, Any]) -> str:
     body becomes ``[body: N lines, M bytes]`` and every argument stays.
 
     A command line is the first place a credential reaches the journal, so the value passes
-    the §10 scanner: on a finding the field becomes ``<redacted: rule>`` and the value is not
-    written at all. That rule is about secrets, not size, and the removal of the cap does not
-    touch it.
+    the §10 scanner: on a finding the **matched span** becomes ``<redacted: rule>`` and the rest
+    of the call is kept (TASK-086 ST-12). Before that, the whole field was replaced by the rule
+    name, which protected the value and destroyed the answer: a four-argument command carrying a
+    token was recorded as ``<redacted: assignment>`` alone. §10 forbids the value, not the
+    command around it.
 
     Args:
         tool: Lowercased tool name.
@@ -2112,24 +2115,20 @@ def _journal_target(tool: str, args: dict[str, Any]) -> str:
     if not raw:
         return ""
 
-    findings = secrets.scan(raw)
-    if findings:
-        # A path is not a credential, and the `base64` rule cannot tell them apart: its
-        # pattern is `[A-Za-z0-9+/]{40,}` and `/` is in that alphabet, so any path of 41+
-        # characters matches (measured: TASK-086 F25). Masking an ordinary path leaves the
-        # field saying nothing, which is the opposite of its purpose.
-        #
-        # The exemption is therefore per MATCH, not per rule and not per target shape: a
-        # base64-looking run is ignored only when it is a path — it contains a `/` and every
-        # `=` it carries is at the very end (base64 padding). A shell command keeps its
-        # exemptions for paths *inside* it, while a token pasted into the same command is
-        # still reported.
-        findings = [finding for finding in findings if not _is_path_finding(finding)]
-    if findings:
-        # A masked excerpt would still quote part of the value; only the rule is reported.
-        return f"<redacted: {findings[0].rule}>"
+    # Bodies are summarised first, so the scan sees what will actually be written: a credential
+    # that lives only in a heredoc body never reaches the journal, because the body does not.
+    recorded = _command_without_heredoc_bodies(raw) if tool in _SHELL_TOOLS else raw
 
-    return _command_without_heredoc_bodies(raw) if tool in _SHELL_TOOLS else raw
+    # A path is not a credential, and the `base64` rule cannot tell them apart: its pattern is
+    # `[A-Za-z0-9+/]{40,}` and `/` is in that alphabet, so any path of 41+ characters matches
+    # (measured: TASK-086 F25). Masking an ordinary path leaves the field saying nothing, which is
+    # the opposite of its purpose.
+    #
+    # The exemption is therefore per MATCH, not per rule and not per target shape: a base64-looking
+    # run is kept only when it is a path — it contains a `/` and every `=` it carries is at the
+    # very end (base64 padding). A shell command keeps its exemption for paths *inside* it, while
+    # a token pasted into the same command is still masked.
+    return secrets.mask(recorded, keep=_is_path_finding)
 
 
 def decide(

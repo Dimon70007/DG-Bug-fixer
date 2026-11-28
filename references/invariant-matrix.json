@@ -782,12 +782,23 @@
       ]
     },
     "50": {
-      "text": "**Подзадача — файл в каталоге, а не файл с точкой.** `tasks/TASK-<n>/ST-<k>.md` под глоб `tasks/TASK-*.md` не попадает, поэтому не перехватывает леджер; `tasks/TASK-<n>.ST-<k>.md` попадает и перехватывает. `## Task`, `STATUS:`, `Counter reset:` и журнал живут только в основной задаче: подфайл их не содержит и леджером не является (§5.3a)",
+      "text": "**Подзадача — файл в каталоге, а не файл с точкой.** `tasks/TASK-<n>/ST-<k>.md` под глоб `tasks/TASK-*.md` не попадает, поэтому не перехватывает леджер; `tasks/TASK-<n>.ST-<k>.md` попадает и перехватывает. `## Task`, `STATUS:`, `Counter reset:` и журнал живут только в основной задаче: подфайл их не содержит и леджером не является (§5.3a). **Статус подзадачи — только в таблице основной задачи:** подфайлы гейт открывает для секретов и записей `### F<n>`, но не для статусов, поэтому статус, записанный лишь в подфайле, для плагина не существует. Первый символ ячейки статуса — маркер из набора `✅`/`⚠️`/`⬜`/`⏭`/`❌`; `✅`, `⏭` и `❌` значат «закрыта», `⚠️` и `⬜` — «открыта». `⏭` без причины в той же ячейке → `deny`",
       "tests": [
         "subtasks_v3::test_a_subtask_directory_does_not_steal_the_ledger",
         "subtasks_v3::test_the_dotted_naming_would_steal_the_ledger",
         "subtasks_v3::test_a_subtask_file_is_not_a_ledger",
-        "subtasks_v3::test_the_main_task_keeps_status_and_journal"
+        "subtasks_v3::test_the_main_task_keeps_status_and_journal",
+        "ledger_v3::test_subtasks_are_read_from_the_ledger_table",
+        "ledger_v3::test_a_closed_marker_means_closed",
+        "ledger_v3::test_a_marker_outside_the_set_is_refused",
+        "ledger_v3::test_a_skip_without_a_reason_is_refused",
+        "ledger_v3::test_a_complete_table_has_no_problems",
+        "ledger_v3::test_a_ledger_without_the_table_is_not_an_error",
+        "ledger_v3::test_the_header_rule_is_not_a_row",
+        "ledger_v3::test_a_row_missing_its_status_is_skipped",
+        "subtasks_v3::test_the_cli_lists_every_subtask_and_its_state",
+        "subtasks_v3::test_the_cli_refuses_when_the_table_is_unusable",
+        "subtasks_v3::test_the_cli_says_so_when_there_is_no_table"
       ]
     },
     "51": {

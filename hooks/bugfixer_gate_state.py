@@ -944,6 +944,34 @@ def _require_ledger(raw: str) -> Path:
     return ledger
 
 
+def _print_subtasks(ledger: Path) -> int:
+    """Print the sub-task status table as the gate reads it (§5.3a).
+
+    The table is the only machine-readable place a sub-task's state lives, so an operator
+    asking "what is still open" should get the same answer the gate uses — not a fresh reading of
+    the sub-files, which the gate never opens for this.
+
+    Args:
+        ledger: Ledger file.
+
+    Returns:
+        ``0`` when every row is readable, ``2`` when one is not (the reason is printed).
+    """
+    text = ledger.read_text(encoding="utf-8", errors="replace")
+    rows = ledger_readers.parse_subtasks(text)
+    if not rows:
+        print("bugfixer-state: no sub-task table in this ledger", file=sys.stderr)
+        return 2
+    for row in rows:
+        state = "closed" if row.closed else "OPEN"
+        detail = f" — {row.text}" if row.text else ""
+        print(f"{row.id:8} {row.marker:3} {state:6} {row.title}{detail}")
+    problems = ledger_readers.subtask_status_problems(text)
+    for problem in problems:
+        print(f"bugfixer-state: {problem}", file=sys.stderr)
+    return 2 if problems else 0
+
+
 def _set_status(ledger: Path, raw: str) -> int:
     """Record a run status in the journal.
 
@@ -995,7 +1023,9 @@ def main(argv: list[str] | None = None) -> int:
         description="Read or advance the phase state machine for a bug-fixer ledger.",
     )
     parser.add_argument("ledger", help="ledger file (the task file for the bug)")
-    parser.add_argument("field", nargs="?", choices=("phase", "advance", "status", "edges"))
+    parser.add_argument(
+        "field", nargs="?", choices=("phase", "advance", "status", "edges", "subtasks")
+    )
     parser.add_argument("value", nargs="?", help="target phase, or status value")
     parser.add_argument(
         "--evidence",
@@ -1019,6 +1049,9 @@ def main(argv: list[str] | None = None) -> int:
         for item in EDGES:
             print(f"{item.name}\t{item.from_phase}->{item.to_phase}")
         return 0
+
+    if args.field == "subtasks":
+        return _print_subtasks(ledger)
 
     if args.value is None:
         print(f"bugfixer-state: {args.field} requires a value", file=sys.stderr)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -132,3 +133,74 @@ def test_the_main_task_keeps_status_and_journal(gate, project: Path) -> None:
     helpers.append(main, event="status", status="DONE")
     assert helpers.journal_path(main).exists()
     assert not (project / "tasks" / "TASK-100").exists(), "no sub-directory was created"
+
+
+# --- the operator surface: `bugfixer state <ledger> subtasks` ----------------
+
+_STATE = helpers.HOOKS / "bugfixer_gate_state.py"
+
+_SUBTASK_TABLE = (
+    "## Subtasks\n\n"
+    "| № | Подзадача | Файл | Статус |\n"
+    "|---|---|---|---|\n"
+    "| ST-1 | read the ledger | [`ST-1.md`](T/TASK-100/ST-1.md) | ✅ CONFIRMED |\n"
+    "| ST-2 | retry cost | [`ST-2.md`](T/TASK-100/ST-2.md) | ⚠️ нет данных |\n"
+    "| ST-3 | adjacent | [`ST-3.md`](T/TASK-100/ST-3.md) | ⏭ ST-1 закрыла |\n"
+)
+
+
+def _state_cli(ledger: Path, *extra: str) -> "subprocess.CompletedProcess[str]":
+    """Run the state CLI the way the skill tells the agent to.
+
+    Args:
+        ledger: Path to the task file.
+        *extra: Additional positional arguments (``subtasks``).
+
+    Returns:
+        Completed process with captured streams.
+    """
+    return subprocess.run(
+        [sys.executable, str(_STATE), str(ledger), *extra],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_the_cli_lists_every_subtask_and_its_state(tmp_path: Path) -> None:
+    """The operator asks what is open; the answer must be the gate's answer, not a fresh reading.
+
+    Sub-files are not opened for statuses at all, so a CLI that read them would report a
+    different truth from the one the gate acts on.
+    """
+    ledger = tmp_path / "TASK-100.md"
+    ledger.write_text("## Task\nfix\n\n" + _SUBTASK_TABLE, encoding="utf-8")
+    result = _state_cli(ledger, "subtasks")
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.strip().splitlines()
+    assert len(lines) == 3, result.stdout
+    assert lines[0].startswith("ST-1") and "closed" in lines[0]
+    assert lines[1].startswith("ST-2") and "OPEN" in lines[1]
+    assert lines[2].startswith("ST-3") and "closed" in lines[2]
+
+
+def test_the_cli_refuses_when_the_table_is_unusable(tmp_path: Path) -> None:
+    """A row the gate cannot read is reported, not silently printed as if it were fine."""
+    ledger = tmp_path / "TASK-100.md"
+    ledger.write_text(
+        "## Task\nfix\n\n" + _SUBTASK_TABLE.replace("⏭ ST-1 закрыла", "⏭"),
+        encoding="utf-8",
+    )
+    result = _state_cli(ledger, "subtasks")
+    assert result.returncode == 2
+    assert "ST-3" in result.stderr
+    assert "reason" in result.stderr
+
+
+def test_the_cli_says_so_when_there_is_no_table(tmp_path: Path) -> None:
+    """An old ledger has no table; the answer is "none", not an empty success."""
+    ledger = tmp_path / "TASK-100.md"
+    ledger.write_text("## Task\nfix\n", encoding="utf-8")
+    result = _state_cli(ledger, "subtasks")
+    assert result.returncode == 2
+    assert "no sub-task table" in result.stderr

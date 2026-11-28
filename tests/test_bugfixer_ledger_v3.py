@@ -307,3 +307,90 @@ def test_marker_with_trailing_noise_does_not_match(gate) -> None:
 def test_marker_inside_prose_is_not_a_marker(gate) -> None:
     """The gate reads the marker, not a sentence about it."""
     assert gate.active_hypothesis("Rewrite `Working on: H2` when switching.\n") == ""
+
+
+# --- the sub-task status table (§5.3a) ---------------------------------------
+
+TABLE = (
+    "| № | Подзадача | Файл | Статус |\n"
+    "|---|---|---|---|\n"
+    "| ST-1 | read the ledger | [`ST-1.md`](TASK-999/ST-1.md) | ✅ CONFIRMED |\n"
+    "| ST-2 | retry cost | [`ST-2.md`](TASK-999/ST-2.md) | ⚠️ частично: нет данных |\n"
+    "| ST-3 | phase map | [`ST-3.md`](TASK-999/ST-3.md) | ⬜ открыта |\n"
+    "| ST-4 | adjacent branch | [`ST-4.md`](TASK-999/ST-4.md) | ⏭ ST-1 закрыла задачу |\n"
+)
+
+
+def test_subtasks_are_read_from_the_ledger_table(gate) -> None:
+    """The table is the only machine-readable place: sub-files are not opened for this.
+
+    Measured on TASK-086: its 14 sub-tasks exist only as rows, and the gate saw none of them,
+    because it looked for `### H<n>` blocks that the ledger never had.
+    """
+    rows = gate.parse_subtasks(TABLE)
+    assert [row.id for row in rows] == ["ST-1", "ST-2", "ST-3", "ST-4"]
+    assert [row.marker for row in rows] == ["✅", "⚠️", "⬜", "⏭"]
+    assert rows[0].text == "CONFIRMED"
+
+
+def test_a_closed_marker_means_closed(gate) -> None:
+    """`✅` and `⏭` mean "nothing further is needed"; `⚠️` and `⬜` do not.
+
+    A skip counts as closed because the whole point of `⏭` is that another sub-task did the work;
+    a partial one does not, because its remainder is still open.
+    """
+    closed = {row.id for row in gate.parse_subtasks(TABLE) if row.closed}
+    assert closed == {"ST-1", "ST-4"}
+
+
+def test_a_marker_outside_the_set_is_refused(gate) -> None:
+    """A status word the table never defines leaves the row meaningless to a reader and a gate."""
+    text = TABLE.replace("✅ CONFIRMED", "done")
+    problems = gate.subtask_status_problems(text)
+    assert problems, "an undefined marker must be reported"
+    assert "ST-1" in problems[0]
+
+
+def test_a_skip_without_a_reason_is_refused(gate) -> None:
+    """`⏭` is a decision only when it says what made the sub-task unnecessary."""
+    text = TABLE.replace("⏭ ST-1 закрыла задачу", "⏭")
+    problems = gate.subtask_status_problems(text)
+    assert problems
+    assert "ST-4" in problems[0]
+    assert "reason" in problems[0]
+
+
+def test_a_complete_table_has_no_problems(gate) -> None:
+    """The control: a well-formed table must not be refused, or the rule is noise."""
+    assert gate.subtask_status_problems(TABLE) == []
+
+
+def test_a_ledger_without_the_table_is_not_an_error(gate) -> None:
+    """An older task has no table; parsing it must return nothing rather than invent rows."""
+    assert gate.parse_subtasks("## Task\nfix\n") == []
+    assert gate.subtask_status_problems("## Task\nfix\n") == []
+
+
+def test_the_header_rule_is_not_a_row(gate) -> None:
+    """`|---|---|---|---|` matches the row pattern and carries no status; it must be skipped.
+
+    Without the guard the separator becomes a sub-task whose id is the literal `ST-`-less rule,
+    and the very first cell of every table is reported as unreadable.
+    """
+    text = (
+        "| № | Подзадача | Файл | Статус |\n"
+        "|---|---|---|---|\n"
+        "| ST-1 | read | [`ST-1.md`](x) | ✅ done |\n"
+    )
+    rows = gate.parse_subtasks(text)
+    assert [row.id for row in rows] == ["ST-1"]
+
+
+def test_a_row_missing_its_status_is_skipped(gate) -> None:
+    """A row cut short carries no marker; inventing one would report a state that was not written."""
+    text = (
+        "| № | Подзадача | Файл | Статус |\n"
+        "|---|---|---|---|\n"
+        "| ST-1 | read | [`ST-1.md`](x) |  |\n"
+    )
+    assert gate.parse_subtasks(text) == []

@@ -1801,6 +1801,107 @@ def scan_records(text: str) -> list[str]:
 #: tree under `tasks/` should not turn one hook call into a crawl of the project.
 _SUBTASK_SCAN_DEPTH: Final[int] = 2
 
+#: A sub-task row of the ledger's status table (§5.3a). The marker is the first character of the
+#: status cell; everything after it is written for a human and is not parsed.
+_SUBTASK_ROW_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\|\s*\*{0,2}(ST-[\w.]+)\*{0,2}\s*\|([^|]*)\|([^|]*)\|([^|]*)\|", re.MULTILINE
+)
+
+#: Markers that mean "the gate may treat this sub-task as closed". Everything else is open.
+_CLOSED_SUBTASK_MARKERS: Final[frozenset[str]] = frozenset({"✅", "⏭", "❌"})
+
+#: Markers whose meaning depends on a written reason. A skip without one is an omission.
+_SUBTASK_NEEDS_REASON: Final[frozenset[str]] = frozenset({"⏭"})
+
+
+@dataclass(frozen=True)
+class SubtaskStatus:
+    """One row of the ledger's sub-task status table (§5.3a).
+
+    Attributes:
+        id: ``ST-<k>`` as written.
+        title: The sub-task's one-line description.
+        marker: First token of the status cell — the only part a machine reads.
+        text: The status cell after the marker, written for a human.
+    """
+
+    id: str
+    title: str
+    marker: str
+    text: str
+
+    @property
+    def closed(self) -> bool:
+        """Whether the marker says the sub-task needs nothing further."""
+        return self.marker in _CLOSED_SUBTASK_MARKERS
+
+
+def parse_subtasks(text: str) -> list[SubtaskStatus]:
+    """Read the sub-task status table out of the ledger (§5.3a).
+
+    The table is the only place a machine can learn whether a sub-task is finished: a status
+    written in a sub-file is invisible, because sub-files are opened for secrets and ``### F<n>``
+    records only. Measured on ``TASK-086``: its hypotheses and sub-tasks exist only as rows, and
+    the gate saw none of them.
+
+    Args:
+        text: Full ledger contents.
+
+    Returns:
+        Rows in file order; empty when the ledger has no such table.
+    """
+    found: list[SubtaskStatus] = []
+    for match in _SUBTASK_ROW_RE.finditer(text):
+        title = match.group(2).strip().strip("*")
+        cell = match.group(4).strip()
+        if not cell or set(cell) <= {"-", ":", " "}:
+            continue
+        marker, _, rest = cell.partition(" ")
+        found.append(
+            SubtaskStatus(
+                id=match.group(1),
+                title=title,
+                marker=marker,
+                text=rest.strip().strip("*").strip(),
+            )
+        )
+    return found
+
+
+def subtask_status_problems(text: str) -> list[str]:
+    """Refuse a sub-task table whose statuses cannot be trusted.
+
+    Two ways a table lies, both measured shapes rather than imagined ones:
+
+    * a marker outside the documented set — the row then means nothing to a reader or a machine;
+    * a row with neither a marker nor text — the sub-task is in the table but says nothing.
+
+    A skip without a reason is checked separately, because the reason is what distinguishes a
+    decision from an omission.
+
+    Args:
+        text: Full ledger contents.
+
+    Returns:
+        Refusals, in row order. Empty when every row is readable.
+    """
+    problems: list[str] = []
+    valid = _CLOSED_SUBTASK_MARKERS | {"⚠️", "⬜"}
+    for row in parse_subtasks(text):
+        if row.marker not in valid:
+            problems.append(
+                f"`{row.id}` has status {row.marker!r}, which is not one of "
+                f"{sorted(valid)}. The marker is the first character of the status cell; "
+                "write `✅` (done), `⚠️` (partial), `⬜` (open), `⏭` (skipped) or `❌` (rejected), "
+                "then the explanation."
+            )
+        elif row.marker in _SUBTASK_NEEDS_REASON and not row.text:
+            problems.append(
+                f"`{row.id}` is marked `⏭` without a reason. Say which sub-task or hypothesis "
+                "made it unnecessary; a bare skip reads as an omission (§5.3a)."
+            )
+    return problems
+
 
 def subtask_directory(ledger: Path) -> Path:
     """The directory a ledger's sub-tasks live in (spec §5.3a).

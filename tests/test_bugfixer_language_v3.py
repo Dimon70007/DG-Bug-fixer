@@ -292,3 +292,119 @@ def test_the_skill_states_the_rule_unconditionally() -> None:
     assert "names the correct marker" in section, (
         "and that the refusal names the marker, which is what makes the mistake cheap"
     )
+
+
+def test_the_published_list_is_exactly_what_the_code_matches() -> None:
+    """Both directions at once: no marker is read but unpublished, none is published but unread.
+
+    The earlier tests compared the *prose* of the table with literals found by a line regex, and a
+    multi-line `re.compile` slipped through: `Причина:` was read by the gate and reported as an
+    unlisted phantom. This test walks the AST instead, so a pattern written across lines or built
+    from a `Final[str]` prefix is still found.
+
+    The table columns are a tuple of names, not a regex, so they are named here rather than derived.
+    """
+    matched = _markers_matched_by_code()
+    listed = _markers_listed_in_skill()
+    table_columns = {"До", "После", "Порог", "Вывод"}
+
+    unlisted = sorted(matched - listed)
+    phantom = sorted(listed - matched - table_columns)
+    assert not unlisted, f"the gate matches these markers, SKILL.md does not list them: {unlisted}"
+    assert not phantom, f"SKILL.md lists these as markers, the gate does not match them: {phantom}"
+
+    # The count is asserted so that a marker added to both sides without a test is still visible.
+    assert len(matched) == 7, (
+        f"expected 7 Cyrillic markers matched by the code, found {len(matched)}: {sorted(matched)}. "
+        "If a marker was added, list it in SKILL.md and extend the twin table."
+    )
+
+
+def _markers_matched_by_code() -> set[str]:
+    """Cyrillic markers the gate matches, found by walking the AST.
+
+    Returns:
+        Marker strings, ready to compare with the published list.
+    """
+    import ast
+
+    found: set[str] = set()
+    for path in (_STATE, _GATE):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            value = None
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                if node.target.id.endswith("_RE"):
+                    value = node.value
+            elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target = node.targets[0]
+                if isinstance(target, ast.Name) and target.id.endswith("_RE"):
+                    value = node.value
+            if not isinstance(value, ast.Call) or not value.args:
+                continue
+            literal = _flatten_pattern(value.args[0], tree)
+            if literal is None or not _CYRILLIC.search(literal):
+                continue
+            marker = _marker_text(literal)
+            if marker:
+                found.add(marker)
+    return found
+
+
+def _flatten_pattern(expr: object, tree: object) -> str | None:
+    """Flatten a pattern expression into its text.
+
+    Args:
+        expr: AST node from a `re.compile(...)` call.
+        tree: Parsed module, for resolving named prefixes.
+
+    Returns:
+        The concatenated literal, or ``None``.
+    """
+    import ast
+
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+        return expr.value
+    if isinstance(expr, ast.BinOp):
+        left = _flatten_pattern(expr.left, tree)
+        right = _flatten_pattern(expr.right, tree)
+        return None if left is None or right is None else left + right
+    if isinstance(expr, ast.Name):
+        for node in tree.body:  # type: ignore[attr-defined]
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                if node.target.id == expr.id and isinstance(node.value, ast.Constant):
+                    return str(node.value.value)
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+                if any(isinstance(t, ast.Name) and t.id == expr.id for t in node.targets):
+                    return str(node.value.value)
+    return None
+
+
+def _marker_text(literal: str) -> str:
+    """The text an agent writes for a pattern, located by its first Cyrillic character.
+
+    Args:
+        literal: Regex source.
+
+    Returns:
+        The marker.
+    """
+    cleaned = literal.replace("\\(", "(").replace("\\)", ")")
+    start = _CYRILLIC.search(cleaned)
+    if start is None:
+        return ""
+    tail = cleaned[start.start() :]
+    return re.split(r"\[|\\s|\\b|\.\*", tail, maxsplit=1)[0].strip()
+
+
+def _markers_listed_in_skill() -> set[str]:
+    """Markers named in the skill's marker table.
+
+    Returns:
+        Marker strings from the table's first column.
+    """
+    section = _language_section()
+    return {
+        match.group(1)
+        for match in re.finditer(r"^\| `([^`]+)` \|", section, re.MULTILINE)
+    }

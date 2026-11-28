@@ -429,7 +429,8 @@
         "language_v3::test_every_russian_marker_is_in_the_twin_table",
         "language_v3::test_the_skill_states_the_rule_unconditionally",
         "language_v3::test_the_chat_rule_is_not_pinned_to_one_language",
-        "language_v3::test_the_description_is_findable_in_english_and_in_russian"
+        "language_v3::test_the_description_is_findable_in_english_and_in_russian",
+        "language_v3::test_the_published_list_is_exactly_what_the_code_matches"
       ]
     },
     "32": {

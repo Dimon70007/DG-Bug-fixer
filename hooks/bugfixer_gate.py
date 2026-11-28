@@ -394,65 +394,78 @@ _WRAPPER_RUNNERS: Final[str] = (
     r"(?:sudo|env|poetry\s+run|uv\s+run|time|nice|nohup|exec|command|xargs)\s+"
 )
 
-#: Shell commands that install, configure or run the linter, matched as whole forms.
+#: Shell commands that set up the environment, matched as whole forms.
 #:
-#: The window exists so the linter can be installed during Phase 0a (invariant 51, §5.6), and it
-#: lists what is **allowed** rather than what is refused: `poetry run` is 457 of the 472 package
-#: manager segments in this repository's transcripts, and a "block package managers" rule would
-#: break the main way a script is started. The package name is pinned to the linter, which is what
-#: keeps `poetry add requests` out — measured: the gate cannot tell the two apart by write
-#: classification (TASK-086 F29), so a shape is the only thing that can.
-_LINTER_WINDOW_RE: Final[tuple[re.Pattern[str], ...]] = (
-    re.compile(r"^poetry add (?:--group dev |--group=dev |--dev )?(?:ruff|shellcheck-py)$"),
-    re.compile(r"^(?:python[0-9.]* -m )?pip[0-9.]* install (?:--user )?(?:ruff|shellcheck-py)$"),
+#: The window exists so the environment can be prepared during Phase 0a (invariant 37, §5.6), and
+#: the operator's ruling of 2026-11-28 14:20 sets its scope: **everywhere environment setup is
+#: allowed, installing a dependency is allowed too.** They are one act — `poetry add x` and a
+#: hand-edited `pyproject.toml` change the same file — so a window that opened only the linter
+#: would be inconsistent with the manifest edit it already permitted.
+#:
+#: It still lists what is **allowed** rather than what is refused. `poetry run` is 457 of the 472
+#: package-manager segments in this repository's transcripts; a "block package managers" rule would
+#: break the main way a script is started.
+_ENV_SETUP_WINDOW_RE: Final[tuple[re.Pattern[str], ...]] = (
+    # Installing dependencies. Any package, any group: that is the ruling.
+    re.compile(r"^poetry add\b[^;&|]*$"),
+    re.compile(r"^poetry install\b[^;&|]*$"),
+    re.compile(r"^poetry lock(?:\s+--no-update)?$"),
+    re.compile(r"^(?:python[0-9.]* -m )?pip[0-9.]* install\b[^;&|]*$"),
+    # Checking with the linter, which §5.6 requires before a script runs.
     re.compile(r"^(?:python[0-9.]* -m )?ruff --version$"),
     re.compile(r"^ruff check [^\s;&|]+$"),
     re.compile(r"^shellcheck --version$"),
     re.compile(r"^shellcheck [^\s;&|]+$"),
 )
 
-#: Files whose content is the linter's configuration. `pyproject.toml` counts only when the write
-#: carries a `[tool.ruff]` table — otherwise it is an ordinary configuration edit.
-_LINTER_CONFIG_FILES: Final[frozenset[str]] = frozenset({"ruff.toml", ".ruff.toml"})
+#: Files whose content configures the environment. `pyproject.toml` counts only when the write
+#: carries a tool table — a dependency list or a linter table — rather than being an arbitrary
+#: edit to the file.
+_ENV_CONFIG_FILES: Final[frozenset[str]] = frozenset({"ruff.toml", ".ruff.toml"})
 
-def _is_linter_window(tool: str, args: dict[str, Any]) -> bool:
-    """Whether this call is the linter setup the init phase is allowed to perform (§5.6).
+#: Tool tables in `pyproject.toml` that count as environment configuration.
+_ENV_CONFIG_TABLES: Final[tuple[str, ...]] = ("[tool.ruff", "[tool.poetry")
 
-    Two kinds, both narrow:
+def _is_env_setup_window(tool: str, args: dict[str, Any]) -> bool:
+    """Whether this call is environment setup the init phase may perform (invariant 37, §5.6).
 
-    * a **command** that installs, configures or runs the linter, matched as a whole form —
-      `poetry add --group dev ruff` yes, `poetry add requests` no;
-    * a **write** of the linter's configuration — `ruff.toml`, or a `pyproject.toml` whose new
-      content carries a `[tool.ruff]` table.
+    Two kinds:
 
-    The window is deliberately a list of allowed forms and not a general "during setup" pass:
-    opening the second would be the silent gate under another name, and `poetry run` (457 of the
-    472 package-manager segments measured here) would break with it.
+    * a **command** that installs a dependency, locks, or runs the linter check, matched as a whole
+      form — one command, no chaining, no `sudo`;
+    * a **write** of environment configuration — `ruff.toml`, or a `pyproject.toml` whose new
+      content carries a tool table.
+
+    The scope is the operator's ruling: where environment setup is allowed, installing a
+    dependency is allowed. Narrowing this to the linter alone was inconsistent with the permitted
+    `pyproject.toml` edit, which changes the same file by the same amount.
 
     Args:
         tool: Lowercased tool name.
         args: Tool arguments.
 
     Returns:
-        ``True`` when the call is part of linter setup.
+        ``True`` when the call is part of environment setup.
     """
     if tool in _SHELL_TOOLS:
         command = _shell_command(args).strip()
         if not command or "\n" in command:
             # A multi-line command is not one of these forms; refusing to parse it keeps the
-            # window from covering `ruff --version\nrm -rf src`.
+            # window from covering `poetry add x\nrm -rf src`.
             return False
-        return any(pattern.match(command) for pattern in _LINTER_WINDOW_RE)
+        return any(pattern.match(command) for pattern in _ENV_SETUP_WINDOW_RE)
 
     path = _target_path(args)
     if not path:
         return False
     name = Path(path).name
-    if name in _LINTER_CONFIG_FILES:
+    if name in _ENV_CONFIG_FILES:
         return True
     if name == "pyproject.toml":
         content = args.get("content") or args.get("new_string") or args.get("newStr") or ""
-        return isinstance(content, str) and "[tool.ruff" in content
+        return isinstance(content, str) and any(
+            table in content for table in _ENV_CONFIG_TABLES
+        )
     return False
 
 
@@ -552,6 +565,66 @@ def _inline_script_refusal() -> str:
     )
 
 
+#: Package managers and the verbs that write the manifest or the lockfile (F29).
+#:
+#: The gate classified none of these as a write, so `poetry add requests` passed in every phase and
+#: a lockfile could be rewritten with no hypothesis (measured: 12 mutating segments in 601, 0 seen
+#: as writes). The rule is on the (program, verb) pair, not on the program name, because
+#: `poetry run` is the main way to start a script here — 457 of 472 reading segments.
+#:
+#: `--dry-run` makes an install a read. Poetry documents it for `install`/`add`/`remove`/`update`
+#: (checked against python-poetry.org/docs/cli on 2026-11-28, since poetry is not installed on this
+#: machine); `lock` has no dry-run, and `--no-update` still rewrites the lockfile.
+_MANAGER_WRITES: Final[tuple[tuple[re.Pattern[str], frozenset[str]], ...]] = (
+    (re.compile(r"(?:^|[\s;&|(`])(?:[^\s;&|]*/)?(?:python[0-9.]*\s+-m\s+)?poetry\b"),
+     frozenset({"add", "remove", "install", "update", "lock"})),
+    (re.compile(r"(?:^|[\s;&|(`])(?:[^\s;&|]*/)?(?:python[0-9.]*\s+-m\s+)?pip[0-9.]*\b"),
+     frozenset({"install", "uninstall"})),
+    (re.compile(r"(?:^|[\s;&|(`])(?:[^\s;&|]*/)?(?:npm|pnpm|yarn)\b"),
+     frozenset({"install", "i", "add", "remove", "uninstall", "un", "update", "up", "ci"})),
+    (re.compile(r"(?:^|[\s;&|(`])(?:[^\s;&|]*/)?cargo\b"),
+     frozenset({"add", "remove", "update", "install"})),
+    (re.compile(r"(?:^|[\s;&|(`])(?:[^\s;&|]*/)?go\b"),
+     frozenset({"get", "install"})),
+    (re.compile(r"(?:^|[\s;&|(`])(?:[^\s;&|]*/)?gem\b"),
+     frozenset({"install", "uninstall", "update"})),
+    (re.compile(r"(?:^|[\s;&|(`])(?:[^\s;&|]*/)?composer\b"),
+     frozenset({"require", "install", "update", "remove"})),
+    (re.compile(r"(?:^|[\s;&|(`])(?:[^\s;&|]*/)?uv\b"),
+     frozenset({"add", "remove", "sync", "install", "pip"})),
+)
+
+#: A flag that turns an install into a report of what would happen.
+_DRY_RUN_RE: Final[re.Pattern[str]] = re.compile(r"(?:^|\s)--dry-run\b")
+
+def _is_package_manager_write(segment: str) -> bool:
+    """Whether one shell segment mutates a manifest or a lockfile (F29).
+
+    Args:
+        segment: One shell segment, quotes already blanked by the caller.
+
+    Returns:
+        ``True`` when a package manager is invoked with a mutating verb and no `--dry-run`.
+    """
+    if _DRY_RUN_RE.search(segment):
+        return False
+    for program, verbs in _MANAGER_WRITES:
+        match = program.search(segment)
+        if match is None:
+            continue
+        rest = segment[match.end() :].strip()
+        tokens = rest.split()
+        if not tokens:
+            return False
+        verb = tokens[0].lower()
+        if verb in verbs:
+            return True
+        # `go mod tidy` is two words; the pair is the verb.
+        if verb == "mod" and len(tokens) > 1 and tokens[1].lower() == "tidy":
+            return True
+    return False
+
+
 def _is_write_command(command: str) -> bool:
     """Whether a shell command would change the filesystem.
 
@@ -567,6 +640,12 @@ def _is_write_command(command: str) -> bool:
     """
     if _WRITE_COMMAND_RE.search(_syntax_only(command)):
         return True
+    # F29: a package manager invoked with a mutating verb writes `pyproject.toml` or a lockfile.
+    # Checked per segment, because `cd x && poetry add y` is one command line and only the second
+    # segment writes.
+    for segment in re.split(r"[;&|\n]+", _syntax_only(command)):
+        if _is_package_manager_write(segment):
+            return True
     for span in _executed_quoted_spans(command):
         if _WRITE_COMMAND_RE.search(_syntax_only(span)):
             return True
@@ -3347,9 +3426,10 @@ def main(argv: list[str] | None = None) -> int:
         if _unblocks_setup(tool, tool_args, _project_root(event)):
             _emit(Verdict(allow=True))
             return EXIT_ALLOW
-        # §5.6: the linter is installed and configured during initialisation, so these forms are
-        # open while the contract is still `not yet`. Narrow on purpose — see `_is_linter_window`.
-        if _is_linter_window(tool, tool_args):
+        # §5.6: environment setup — including dependency installation — happens during
+        # initialisation, so these forms are open while the contract is still `not yet`.
+        # See `_is_env_setup_window` for why the scope is the environment, not the linter alone.
+        if _is_env_setup_window(tool, tool_args):
             _emit(Verdict(allow=True))
             return EXIT_ALLOW
         _fail_closed(str(exc))
@@ -3370,7 +3450,7 @@ def main(argv: list[str] | None = None) -> int:
         if _unblocks_setup(tool, tool_args, _project_root(event)):
             _emit(Verdict(allow=True))
             return EXIT_ALLOW
-        if _is_linter_window(tool, tool_args):
+        if _is_env_setup_window(tool, tool_args):
             _emit(Verdict(allow=True))
             return EXIT_ALLOW
         # The message already ends with what to do; appending a generic "fill it in" would fit

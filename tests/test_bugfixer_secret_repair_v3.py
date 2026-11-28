@@ -208,3 +208,83 @@ def test_the_fix_to_a_subtask_file_is_allowed(gate, project: Path) -> None:
         gate, project, "write", {"file_path": str(sub), "content": "# ST\n| Note | clean |\n"}
     )
     assert verdict.allow, verdict.reason
+
+
+# --- the norm must be editable by the rule it defines ---------------------------
+
+
+def _spec_like(tmp_path: Path) -> Path:
+    """A document that quotes forbidden forms in order to forbid them (§10's own table).
+
+    Args:
+        tmp_path: pytest's temporary directory.
+
+    Returns:
+        Path of the document.
+    """
+    docs = tmp_path / "docs"
+    docs.mkdir(exist_ok=True)
+    document = docs / "spec.md"
+    document.write_text(
+        "# Norm\n\n| Forbidden | Allowed |\n|---|---|\n" + SECRET_LINE + "\n\nProse to correct.\n",
+        encoding="utf-8",
+    )
+    return document
+
+
+def test_a_document_that_quotes_forbidden_forms_is_editable(gate, project: Path) -> None:
+    """A rule has to quote what it forbids; scanning any addressed file made it uneditable.
+
+    Measured (`probes/st12_norm_shapes.py`, TASK-086 ST-12): every `StrReplace` on
+    `docs/bug-fixer-v3-spec.md` was refused with `secret in … at line 1007` — the §10 table — no
+    matter what the edit changed, including the edit that corrected the norm. Invariant 26 is about
+    records, not about every document in the project.
+    """
+    document = _spec_like(project.parent)
+    verdict = _decide(
+        gate,
+        project,
+        "write",
+        {"file_path": str(document), "content": document.read_text(encoding="utf-8") + "more\n"},
+    )
+    assert verdict.allow, verdict.reason
+
+
+def test_a_new_record_file_is_still_scanned(gate, project: Path) -> None:
+    """The bound must not reopen the hole it was written around: a new record is a record.
+
+    Before, the file did not exist, `subtask_files` listed what was on disk, and a `Write` of a
+    poisoned new `TASK-<n>/ST-1.md` was allowed while the same write to an existing file was
+    refused.
+    """
+    folder = project.parent / "TASK-999"
+    folder.mkdir(exist_ok=True)
+    verdict = _decide(
+        gate, project, "write", {"file_path": str(folder / "ST-2.md"), "content": SECRET_LINE}
+    )
+    assert not verdict.allow
+    assert verdict.verdict_of == "secret-in-record"
+
+
+def test_a_markdown_beside_the_ledger_is_a_record(gate, project: Path) -> None:
+    """Findings and notes sit beside the ledger (§5.3a), so they are records too."""
+    verdict = _decide(
+        gate,
+        project,
+        "write",
+        {"file_path": str(project.parent / "TASK-999-notes.md"), "content": SECRET_LINE},
+    )
+    assert not verdict.allow
+    assert verdict.verdict_of == "secret-in-record"
+
+
+def test_the_ledger_itself_is_a_record(gate, project: Path) -> None:
+    """The task file is where findings are written, and it stays scanned.
+
+    The ledger needs no branch in the bound — it is always among the scanned bodies — but the rule
+    it protects is that a record is refused, so the case is pinned here rather than assumed from
+    the shape of the code.
+    """
+    verdict = _decide(gate, project, "write", {"file_path": str(project), "content": POISONED})
+    assert not verdict.allow
+    assert verdict.verdict_of == "secret-in-record"

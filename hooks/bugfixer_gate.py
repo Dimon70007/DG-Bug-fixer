@@ -2568,14 +2568,48 @@ def _secret_findings_for_write(
     # A file that does not exist yet is not in `subtask_files` — it lists what is on disk. So
     # creating one was never scanned: measured, `Write` of a record with a secret to a new
     # `TASK-<n>/ST-1.md` was allowed while the same write to an existing file was refused.
+    #
+    # The scan is bounded to the run's own records, and that bound is a fix, not a courtesy
+    # (TASK-086 ST-12, measured). A norm has to quote the forms it forbids — the spec's own §10
+    # table carries `api_key: len=51` — so scanning any addressed file made the document that
+    # defines a rule uneditable by the rule: every `StrReplace` on the spec was refused with
+    # `secret in bug-fixer-v3-spec.md at line 1007`, whatever it changed. Invariant 26 is about
+    # records (`### F<n>`, findings, log output), and those live in the ledger and its sub-files.
     known = {key for key, _ in bodies}
     if addressed is not None and not replaced and addressed not in known:
-        prospective = _prospective_body("", tool, args, addressed, ledger)
-        if prospective is not None:
-            for finding in secrets.scan(prospective):
-                refusals.append(describe(addressed.name, finding))
+        if _is_record_file(addressed, ledger):
+            prospective = _prospective_body("", tool, args, addressed, ledger)
+            if prospective is not None:
+                for finding in secrets.scan(prospective):
+                    refusals.append(describe(addressed.name, finding))
 
     return refusals, notes
+
+
+def _is_record_file(path: Path, ledger: Path) -> bool:
+    """Whether a new file would be one of the run's own records (invariant 26).
+
+    The secret rule judges records — the ledger, its sub-task files, findings, log output — not
+    every document in the project. Measured reason for the bound: a norm quotes the forms it
+    forbids, so a scan of any addressed file refused every edit to the spec, including the edit
+    that fixes the norm (`probes/st12_norm_shapes.py`, TASK-086 ST-12).
+
+    A path qualifies when it lives under the ledger's sub-task directory, or is a markdown file
+    beside it — where §5.3a puts findings and notes. The ledger itself needs no branch here: it is
+    always among the scanned bodies, so a call that addresses it never reaches this function.
+
+    Args:
+        path: File the call addresses.
+        ledger: Ledger being enforced.
+
+    Returns:
+        ``True`` when the file would hold a record.
+    """
+    resolved = _normalized(path)
+    folder = _normalized(subtask_directory(ledger))
+    if resolved == folder or folder in resolved.parents:
+        return True
+    return resolved.parent == _normalized(ledger).parent and resolved.suffix == ".md"
 
 
 def phase_gate_enabled(ledger_text: str) -> bool:

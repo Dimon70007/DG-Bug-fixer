@@ -301,20 +301,20 @@
       "text": "Запись `F<n>` с секретом по любому из восьми паттернов §10 → `deny`, отказ называет сработавшее выражение. **Длина, хэш, размер и префикс секрета — тоже `deny`**: они позволяют подобрать или проверить значение офлайн. Факт настройки (`api_key: configured`, `password_present=true`) не отказывает и не предупреждает — это единственное, что о секрете разрешено сообщать. **Запрещена запись секрета, а не доступ к файлам, где он лежит:** судится тело, которое запись производит (леджер, подфайл `tasks/TASK-<n>/**/*.md`, новый файл, которого ещё нет). Секрет, уже лежащий в другом файле, работу не блокирует, но и **не** позволяет объявить прогон завершённым: терминальный статус (`DONE`, `PARTIAL`, `LIMIT_REACHED`, `BLOCKED`) и запись в `CHANGELOG.md` при нём отказываются. Отказ называет файл",
       "tests": [
         "cli_v3::test_secrets_scans_a_file_and_the_diff",
+        "cli_v3::test_state_refuses_a_terminal_status_while_a_secret_remains",
         "init_and_required_contract::test_init_never_copies_mcp_secrets_into_the_contract",
         "limits_v3::test_a_fact_of_setup_is_allowed",
+        "limits_v3::test_a_lingering_secret_does_not_block_unrelated_work",
         "limits_v3::test_a_null_value_is_not_a_secret",
-        "limits_v3::test_writing_a_key_length_is_denied",
         "limits_v3::test_an_env_var_reference_is_not_a_secret",
         "limits_v3::test_clean_record_is_allowed",
         "limits_v3::test_cli_reports_a_secret_in_a_file",
         "limits_v3::test_cli_returns_zero_on_a_clean_file",
         "limits_v3::test_each_refusal_pattern_fires",
         "limits_v3::test_harmless_flag_is_not_even_a_warning",
-        "limits_v3::test_writing_a_record_with_a_secret_is_denied",
-        "cli_v3::test_state_refuses_a_terminal_status_while_a_secret_remains",
-        "limits_v3::test_a_lingering_secret_does_not_block_unrelated_work",
         "limits_v3::test_the_refusal_does_not_repeat_the_secret",
+        "limits_v3::test_writing_a_key_length_is_denied",
+        "limits_v3::test_writing_a_record_with_a_secret_is_denied",
         "secret_wordings_v3::test_no_taught_phrase_is_refused",
         "secret_wordings_v3::test_the_forbidden_examples_are_marked_as_such",
         "secret_wordings_v3::test_the_record_markers_stay_copyable",
@@ -340,14 +340,18 @@
         "subtask_scan_v3::test_the_directory_name_is_the_task_number_only",
         "subtask_scan_v3::test_the_refusal_names_the_file_the_record_is_in",
         "secret_repair_v3::test_a_clean_write_to_a_clean_ledger_is_still_allowed",
+        "secret_repair_v3::test_a_document_that_quotes_forbidden_forms_is_editable",
+        "secret_repair_v3::test_a_lingering_secret_refuses_the_finish",
+        "secret_repair_v3::test_a_markdown_beside_the_ledger_is_a_record",
+        "secret_repair_v3::test_a_new_record_file_is_still_scanned",
         "secret_repair_v3::test_a_replace_that_introduces_a_secret_is_refused",
         "secret_repair_v3::test_a_replace_that_removes_the_secret_is_allowed",
+        "secret_repair_v3::test_a_secret_in_an_untouched_subtask_file_does_not_block",
         "secret_repair_v3::test_a_write_that_introduces_a_secret_is_refused",
         "secret_repair_v3::test_a_write_that_removes_the_secret_is_allowed",
         "secret_repair_v3::test_an_unreconstructable_edit_falls_back_to_the_file",
         "secret_repair_v3::test_the_fix_to_a_subtask_file_is_allowed",
-        "secret_repair_v3::test_a_lingering_secret_refuses_the_finish",
-        "secret_repair_v3::test_a_secret_in_an_untouched_subtask_file_does_not_block"
+        "secret_repair_v3::test_the_ledger_itself_is_a_record"
       ]
     },
     "27": {
@@ -465,7 +469,7 @@
       ]
     },
     "36": {
-      "text": "**Отсутствие журнала не блокирует.** Нет журнала → прогон не начат, фаза 1; запись в файл задачи разрешена, отказа нет. **Отказ объясним по журналу:** запись `deny` несёт `tool`, `target`, `phase`, `verdict_of` и `ledger` (§5.4) — по журналу видно, каким инструментом, на что, в какой фазе и по какому правилу отказано, и чей это журнал. `target` записывается **целиком**: предела длины нет, тело heredoc заменяется сводкой `[body: N lines, M bytes]`, а строка вызова сохраняется полностью; поля `truncated` не существует. Обязательность распространяется на записи, созданные после введения полей; журналы прежнего формата читаются без миграции",
+      "text": "**Отсутствие журнала не блокирует.** Нет журнала → прогон не начат, фаза 1; запись в файл задачи разрешена, отказа нет. **Отказ объясним по журналу:** запись `deny` несёт `tool`, `target`, `phase`, `verdict_of` и `ledger` (§5.4) — по журналу видно, каким инструментом, на что, в какой фазе и по какому правилу отказано, и чей это журнал. `target` записывается **целиком**: предела длины нет, тело heredoc заменяется сводкой `[body: N lines, M bytes]`, а строка вызова сохраняется полностью; поля `truncated` не существует. **Единственное исключение — значение секрета:** оно не пишется (§10), вместо него в командной строке остаётся `<redacted: <rule>>`, остальная команда сохраняется. Обязательность распространяется на записи, созданные после введения полей; журналы прежнего формата читаются без миграции",
       "tests": [
         "journal_v3::test_without_a_journal_the_run_is_in_phase_1",
         "journal_v3::test_without_a_journal_the_task_file_is_still_writable",

@@ -368,6 +368,57 @@ def test_the_skill_forbids_inline_scripts_and_says_what_to_do_instead() -> None:
     )
 
 
+def test_the_skill_does_not_demonstrate_the_shape_it_forbids() -> None:
+    """A command inside a fenced block is an instruction, not an illustration of a sin.
+
+    Found while writing ST-11: the section that says "check a machine-readable file before the
+    test run" showed `python3 -c "import json…"` — the very form the prohibitions list forbids
+    six hundred lines earlier. Examples are copied, which is why 614 `-c` commands appear in the
+    transcripts. A prohibition that its own examples contradict is not a rule but a suggestion.
+    """
+    text = _skill_text()
+    forbidden = (
+        'python3 -c "',
+        "python3 -c '",
+        "python3 - <<",
+        'bash -c "',
+        "bash -c '",
+    )
+    offenders: list[str] = []
+    for block in re.findall(r"```bash\n(.*?)```", text, re.DOTALL):
+        for line in block.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            for shape in forbidden:
+                if shape in stripped:
+                    offenders.append(stripped)
+    assert not offenders, (
+        "the skill's own examples use the shape it forbids: " + "; ".join(offenders)
+    )
+
+
+def test_the_skill_does_not_promise_what_the_gate_refuses() -> None:
+    """The linter steps belong to initialisation, and the skill must not claim otherwise.
+
+    Measured (TASK-086 ST-11): while `Contract verified by:` is `not yet`, invariant 37 opens
+    only the contract and the plugin tree, so `Write ruff.toml` and `poetry add ruff` are
+    refused. A skill that says "configure it in phase 4" would be describing a phase where the
+    gate disagrees — the same class of defect as an example that teaches a forbidden shape.
+    """
+    text = _skill_text()
+    section = text.split("**Инлайн-скрипты запрещены", 1)[1].split("**Зонд живёт", 1)[0]
+    assert "Phase 0a" in section, (
+        "the linter steps must be placed at initialisation, not at a probe"
+    )
+    assert "только фаза 4" not in section, (
+        "configuration is not a phase-4 task: it belongs to initialisation"
+    )
+    assert "заблокированы" in section, (
+        "the skill must say the install steps are blocked today, not imply they work"
+    )
+
+
 def test_a_probe_is_deleted_once_its_finding_has_a_test() -> None:
     """Probes are temporary by design; the skill must say when they stop being needed.
 

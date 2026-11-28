@@ -52,15 +52,15 @@ def _suite() -> dict[str, str]:
     return found
 
 
-def test_the_matrix_holds_all_fifty_four_invariants() -> None:
-    """§13 has 54 entries: 1–49 plus 17a, 17b and 27a–27c.
+def test_the_matrix_holds_all_fifty_five_invariants() -> None:
+    """§13 has 55 entries: 1–51 plus 17a, 17b and 27a–27c.
 
     The count is asserted rather than derived so that a spec edit which adds, drops or
     renumbers an invariant forces this file to be revisited.
     """
     invariants = _matrix()["invariants"]
     assert isinstance(invariants, dict)
-    expected = {str(n) for n in range(1, 50)} | {"17a", "17b", "27a", "27b", "27c", "45a", "50"}
+    expected = {str(n) for n in range(1, 52)} | {"17a", "17b", "27a", "27b", "27c", "45a"}
     assert set(invariants) == expected, (
         f"the matrix and §13 disagree: missing {sorted(expected - set(invariants))}, "
         f"extra {sorted(set(invariants) - expected)}"

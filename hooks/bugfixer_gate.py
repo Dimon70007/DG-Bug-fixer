@@ -387,6 +387,109 @@ def _command_without_heredoc_bodies(command: str) -> str:
     return "\n".join(rebuilt)
 
 
+#: Programs that run another program, so the interpreter is not the first token of the segment:
+#: `poetry run python -c …`, `uv run python -c …`, `env python -c …`. Measured (TASK-086 ST-11):
+#: 26 real commands in this repository spell it with `poetry run`, and the gate missed every one.
+_WRAPPER_RUNNERS: Final[str] = (
+    r"(?:sudo|env|poetry\s+run|uv\s+run|time|nice|nohup|exec|command|xargs)\s+"
+)
+
+def _is_inline_script(command: str) -> bool:
+    """Whether the command carries its program in the command line (§5.6, invariant 51).
+
+    Two forms, both refused regardless of what the body does:
+
+    * a heredoc fed to an interpreter — `python3 - <<'PY' … PY`;
+    * a `-c` argument — `python3 -c "…"`, `bash -c '…'`, and the same behind a wrapper such as
+      `poetry run` or `env`.
+
+    The content is deliberately not examined: the gate cannot read a program, so "this `-c` only
+    prints" is a claim it cannot check. Saying so is honest; guessing would be the defect.
+    `python3 script.py` is a call to a file and is not refused — that is the required form.
+
+    The wrapper form is checked here rather than by extending `_INTERPRETER_RE`: that pattern
+    also decides what counts as a *write* (§5.5), and widening it there would change the
+    classification of every shell call — a different rule with its own evidence.
+
+    Args:
+        command: Raw command line.
+
+    Returns:
+        ``True`` when the command inlines its program.
+    """
+    if _heredoc_bodies_are_executed(command) or _executed_quoted_spans(command):
+        return True
+    for line in command.splitlines():
+        for match in re.finditer(
+            rf"(?:{_WRAPPER_RUNNERS})?(?:[^\s;&|]*/)?"
+            r"(?:bash|sh|zsh|dash|ksh|python[0-9.]*|perl|ruby|node)\b",
+            line,
+        ):
+            for token in line[match.end() :].split():
+                stripped = token.strip("\"'")
+                if not stripped.startswith("-"):
+                    break
+                if "c" in stripped.lstrip("-"):
+                    return True
+    return False
+
+
+def _is_new_script_target(target: str, ledger: Path) -> bool:
+    """Whether a write creates a script in a place the ban's exit names (§5.6).
+
+    A *new* file under `scripts/` or `probes/` is the alternative to an inline command, so it is
+    allowed in every phase. An **existing** file there is a shipped tool — in this repository
+    `scripts/linux/*.py` is tracked and driven by the Makefile — and editing it is a code change,
+    judged by the phase like any other. Existence is the boundary because it is checkable
+    without reading git (§12).
+
+    Args:
+        target: Path from the write.
+        ledger: Ledger being enforced.
+
+    Returns:
+        ``True`` when the target is a script file that does not exist yet.
+    """
+    cleaned = target.strip().strip("\"'`")
+    if not cleaned:
+        return False
+    candidate = Path(cleaned)
+    if not candidate.is_absolute():
+        candidate = _project_of(ledger) / candidate
+    resolved = _normalized(candidate)
+    root = _project_of(ledger)
+    if not any(resolved == root / name or root / name in resolved.parents
+               for name in ("scripts", "probes")):
+        return False
+    return not resolved.exists()
+
+
+def _inline_script_refusal() -> str:
+    """The refusal for an inline script, with the exit spelled out (invariant 51).
+
+    A ban with no exit is a wall, and a wall sends the agent back to the same heredoc with a
+    different quoting trick. So the text names the file, the linter check and the order, and it
+    says plainly that the answer does not change with the phase.
+
+    Returns:
+        The refusal message, shared by both places that refuse this form.
+    """
+    return (
+        "inline scripts are refused in every phase: the gate does not read the program, so it "
+        "cannot tell `print('a > b')` from `open('f','w')`, and a guess either way is wrong. "
+        "This is not a phase rule — the same command is refused in phase 4.\n\n"
+        "Write the script to a file, check it, then run it by name:\n"
+        "  scripts/<name>.py                          (or probes/<name>.py for a one-off)\n"
+        "  ruff --version                             (missing? poetry add --group dev ruff, "
+        "or python3 -m pip install ruff)\n"
+        "  python3 -m py_compile scripts/<name>.py    (or ruff check; for *.sh: shellcheck, "
+        "or bash -n)\n"
+        "  python3 scripts/<name>.py\n\n"
+        "A NEW file under scripts/ or probes/ may be written in any phase; editing an existing "
+        "script is a code change, judged by the phase (invariants 47, 51; spec §5.6)."
+    )
+
+
 def _is_write_command(command: str) -> bool:
     """Whether a shell command would change the filesystem.
 
@@ -2013,6 +2116,12 @@ def _decide(
         )
 
     if not is_write:
+        # Invariant 51: an inline script is refused on its **form**, not on what it does. A
+        # read-only `python3 -c` reaches this line because the gate classified it as a read —
+        # and classifying it correctly would need a Python parser, which §5.5 explains is
+        # deliberately out of scope. The refusal therefore says "write a file", not "you wrote".
+        if tool in _SHELL_TOOLS and _is_inline_script(detail):
+            return _deny(_inline_script_refusal(), verdict_of="inline-script")
         return Verdict(allow=True)
 
     # Invariant 33: the journal is history, and history is written by the runtime. This
@@ -2099,6 +2208,13 @@ def _decide(
             "run it (spec §15, invariant 43).",
             verdict_of="outside-project",
         )
+    # Invariant 51 for the writing form: a heredoc into an interpreter is classified as a write,
+    # so it reaches here rather than the "not a write" branch above. Placed after the journal and
+    # project-boundary rules (each names a more specific objection) and before the changelog and
+    # phase rules: the ban is about the form, so "wait for phase 4" would be the wrong advice —
+    # the same command is refused in phase 4 too.
+    if tool in _SHELL_TOOLS and _is_inline_script(detail):
+        return _deny(_inline_script_refusal(), verdict_of="inline-script")
     # Invariant 49: `CHANGELOG.md` is a claim that a change is finished, so it is judged by
     # evidence rather than by phase. Placed before the phase rules because "wait for phase 4"
     # would be the wrong advice — the entry is written *after* a probe proved itself, in any phase.
@@ -2848,6 +2964,11 @@ def _is_code_write(detail: str, ledger: Path, tool: str, *, dev_plugin: bool = F
         # A write with no readable destination cannot be shown to be harmless.
         return True
     if all(_addresses_ledger(target, ledger) for target in targets):
+        return False
+    # §5.6: a NEW file under scripts/ or probes/ is the exit from the inline-script ban, so it is
+    # allowed in every phase. An existing one is a shipped tool and stays code (checked per
+    # target, because a command line may name several).
+    if all(_is_new_script_target(target, ledger) for target in targets):
         return False
     tests = _require_test_paths(ledger, tool)
     for target in targets:

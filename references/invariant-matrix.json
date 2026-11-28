@@ -478,7 +478,7 @@
       ]
     },
     "37": {
-      "text": "**Нет контракта — нет гейта.** Контракт проекта отсутствует, обязательное поле осталось плейсхолдером `<…>`, или леджер по контракту не найден → `deny` с рекомендацией. Молчаливого разрешения не существует; проект, которому плагин не нужен, снимает хук. Открыты только записи, делающие установку возможной: сам контракт, дерево плагина и создание леджера по паттерну",
+      "text": "**Нет контракта — нет гейта.** Контракт проекта отсутствует, обязательное поле осталось плейсхолдером `<…>`, или леджер по контракту не найден → `deny` с рекомендацией. Молчаливого разрешения не существует; проект, которому плагин не нужен, снимает хук. Открыты только записи, делающие установку возможной: сам контракт, дерево плагина и создание леджера по паттерну. **Настройка линтера (§5.6) в этот список пока не входит:** измерено, что `ruff.toml` и `poetry add ruff` при `not yet` дают `deny`, а открыть их без F29 нельзя — гейт не отличает `poetry add ruff` от `poetry add requests`. Расширение списка — отдельная правка",
       "tests": [
         "contract_v1::test_the_unfilled_template_is_rejected_with_the_field_named",
         "contract_v1::test_doctor_refuses_a_contract_missing_one_of_the_four_points",
@@ -656,7 +656,7 @@
       ]
     },
     "45a": {
-      "text": "**Кавычки — данные, не синтаксис.** `>`, `>>` и `|` внутри кавычек не создают записи: `grep \"a\\|mkdir\"` не пишет файл. Два исключения — исполняемое содержимое: вложенная команда (`bash -c '…'`, `python -c '…'`) и heredoc в интерпретатор (`python3 - <<'PY'`), потому что там текст кавычек и есть программа. Обратное тоже: heredoc в `cat` без перенаправления — не запись",
+      "text": "**Кавычки — данные, не синтаксис.** `>`, `>>` и `|` внутри кавычек не создают записи: `grep \"a\\|mkdir\"` не пишет файл. Два исключения — исполняемое содержимое: вложенная команда (`bash -c '…'`, `python -c '…'`) и heredoc в интерпретатор (`python3 - <<'PY'`), потому что там текст кавычек и есть программа. Обратное тоже: heredoc в `cat` без перенаправления — не запись. Обе исполняемые формы отказаны **безусловно** (инвариант 51), независимо от содержимого",
       "tests": [
         "quote_syntax_v3::test_a_read_only_command_with_quoted_metacharacters_is_not_a_write",
         "quote_syntax_v3::test_a_real_write_is_still_a_write",
@@ -750,6 +750,27 @@
         "subtasks_v3::test_the_dotted_naming_would_steal_the_ledger",
         "subtasks_v3::test_a_subtask_file_is_not_a_ledger",
         "subtasks_v3::test_the_main_task_keeps_status_and_journal"
+      ]
+    },
+    "51": {
+      "text": "**Инлайн-скрипт отказан безусловно, и выход назван.** `python3 -c \"…\"`, `python3 - <<'PY' … PY`, `bash -c \"…\"` → `deny` с `verdict_of: inline-script` в любой фазе, **независимо от содержимого**: гейт не читает программу, поэтому «безопасный `-c`» он проверить не может. Выход обязателен и состоит из четырёх шагов (§5.6): проверить наличие линтера → установить при отсутствии → настроить → проверить скрипт и лишь затем запустить. **Шаги 1–3 принадлежат инициализации (Phase 0a)**, а не пробе; до открытия окна инвариантом 37 они заблокированы, и это названо, а не обойдено. Скрипт пишется **файлом**: новый файл в `scripts/**` или `probes/**` разрешён в любой фазе, **существующий** скрипт — код и по фазе судится как код. Шаг проверки не бывает невыполнимым: умолчание — `python3 -m py_compile` и `bash -n`, это stdlib и встроенное. Текст отказа обязан называть путь выхода и команду проверки",
+      "tests": [
+        "inline_scripts_v3::test_a_read_only_dash_c_is_refused",
+        "inline_scripts_v3::test_a_read_only_heredoc_is_refused",
+        "inline_scripts_v3::test_the_refusal_names_the_way_out",
+        "inline_scripts_v3::test_a_quote_inside_a_program_is_still_the_same_refusal",
+        "inline_scripts_v3::test_an_ordinary_command_is_still_allowed",
+        "inline_scripts_v3::test_running_a_script_file_is_allowed",
+        "inline_scripts_v3::test_a_new_script_may_be_written_in_phase_one",
+        "inline_scripts_v3::test_a_new_probe_may_be_written_in_phase_one",
+        "inline_scripts_v3::test_editing_a_shipped_script_is_still_a_code_change",
+        "inline_scripts_v3::test_a_source_edit_is_still_refused",
+        "inline_scripts_v3::test_a_new_script_outside_the_project_is_refused",
+        "inline_scripts_v3::test_a_new_script_is_not_a_ledger_write",
+        "inline_scripts_v3::test_a_wrapped_interpreter_is_refused_too",
+        "inline_scripts_v3::test_a_wrapped_script_file_is_still_allowed",
+        "skill::test_the_skill_does_not_demonstrate_the_shape_it_forbids",
+        "skill::test_the_skill_does_not_promise_what_the_gate_refuses"
       ]
     }
   },
@@ -937,7 +958,7 @@
     },
     "DoD-13 (the invariant matrix is complete in both directions)": {
       "tests": [
-        "invariant_matrix_v3::test_the_matrix_holds_all_fifty_four_invariants",
+        "invariant_matrix_v3::test_the_matrix_holds_all_fifty_five_invariants",
         "invariant_matrix_v3::test_every_invariant_names_a_test_or_says_why_it_cannot",
         "invariant_matrix_v3::test_an_unautomated_invariant_carries_a_reason",
         "invariant_matrix_v3::test_every_named_test_exists",
